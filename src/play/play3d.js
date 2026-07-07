@@ -7,6 +7,12 @@ import {
   keyFor,
   validateMaskMap
 } from '../core/dungeon.js';
+import {
+  buildVoxelDungeonMesh,
+  hasVoxelDungeonAirAt,
+  hasVoxelDungeonHeadroomAt,
+  hasVoxelDungeonLineOfSight
+} from '../core/voxel-dungeon.js?v=organic-cave-2';
 
 const THREE_MODULE_URL = 'https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js';
 const VOXELS_PER_TILE = 10;
@@ -25,6 +31,7 @@ const SCATTER_DENSITY = {
   chestDivisor: 1250
 };
 const SCATTER_KIND_ORDER = ['ore', 'chest', 'rock', 'stalagmite', 'debris'];
+const EMPTY_BLOCKED_VOXELS = new Set();
 const ENEMY_RADIUS = 0.34;
 const ENEMY_AGGRO_RANGE = 4.2;
 const ENEMY_VISION_RANGE = 13;
@@ -54,7 +61,36 @@ const DEFAULT_PLAY_SETTINGS = {
   enemyMeleeChance: 62,
   enemyCasterChance: 38,
   enemyAggroRange: ENEMY_AGGRO_RANGE,
-  enemyVisionRange: ENEMY_VISION_RANGE
+  enemyVisionRange: ENEMY_VISION_RANGE,
+  player: {
+    maxHealth: PLAYER_MAX_HEALTH,
+    moveSpeed: 4.4,
+    sprintSpeed: 7.2,
+    attackDamage: PLAYER_ATTACK_DAMAGE,
+    attackSpeed: 1 / PLAYER_ATTACK_COOLDOWN,
+    attackRange: PLAYER_ATTACK_RANGE,
+    lightRadius: 16.5,
+    lightIntensity: 6.2,
+    lightFlicker: 0.34
+  },
+  enemyTypes: {
+    melee: {
+      health: 3,
+      speed: 2.25,
+      attackRate: 0.85,
+      damage: ENEMY_MELEE_DAMAGE,
+      range: ENEMY_MELEE_RANGE
+    },
+    caster: {
+      health: 2,
+      speed: 1.65,
+      attackRate: 0.45,
+      damage: ENEMY_PROJECTILE_DAMAGE,
+      range: ENEMY_CAST_RANGE,
+      minRange: ENEMY_CAST_MIN_RANGE,
+      projectileSpeed: ENEMY_PROJECTILE_SPEED
+    }
+  }
 };
 const PLAY_MOVE_CODES = new Set([
   'KeyW',
@@ -230,18 +266,197 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function numberOr(value, fallback, min = -Infinity, max = Infinity) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? clamp(parsed, min, max) : fallback;
+}
+
+function integerOr(value, fallback, min, max) {
+  return Math.round(numberOr(value, fallback, min, max));
+}
+
+function parseColor(value, fallback) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return clamp(Math.round(value), 0, 0xffffff);
+  }
+  if (typeof value !== 'string') return fallback;
+
+  const trimmed = value.trim();
+  if (!trimmed) return fallback;
+  const hex = trimmed.startsWith('#') ? trimmed.slice(1) : (trimmed.startsWith('0x') ? trimmed.slice(2) : trimmed);
+  if (!/^[0-9a-f]{3}([0-9a-f]{3})?$/i.test(hex)) return fallback;
+  const expanded = hex.length === 3 ? hex.split('').map(char => char + char).join('') : hex;
+  const parsed = Number.parseInt(expanded, 16);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeModelScale(scale, fallback = { x: 1, y: 1, z: 1 }) {
+  if (typeof scale === 'number' && Number.isFinite(scale)) {
+    const uniform = clamp(scale, 0.05, 6);
+    return { x: uniform, y: uniform, z: uniform };
+  }
+  if (!scale || typeof scale !== 'object') return { ...fallback };
+  return {
+    x: numberOr(scale.x, fallback.x, 0.05, 6),
+    y: numberOr(scale.y, fallback.y, 0.05, 6),
+    z: numberOr(scale.z, fallback.z, 0.05, 6)
+  };
+}
+
+function defaultModelColor(kind, category) {
+  const modelKind = String(kind || '').toLowerCase();
+  const entityCategory = String(category || '').toLowerCase();
+  if (modelKind.includes('crystal')) return 0x4bb8c4;
+  if (modelKind.includes('ore') || entityCategory.includes('resource') || entityCategory.includes('mineral')) return 0x8d9990;
+  if (modelKind.includes('chest') || entityCategory.includes('treasure')) return 0x704521;
+  if (modelKind.includes('stalagmite')) return 0x4b4537;
+  if (modelKind.includes('rock')) return 0x37352d;
+  if (entityCategory.includes('enemy')) return 0x223027;
+  return 0x6c695f;
+}
+
+function normalizeModel(model = {}, category = '') {
+  const rawKind = typeof model.kind === 'string' && model.kind.trim() ? model.kind.trim().toLowerCase() : 'box';
+  const fallbackColor = defaultModelColor(rawKind, category);
+  const emissive = parseColor(model.emissive, 0x000000);
+  return {
+    kind: rawKind,
+    color: parseColor(model.color, fallbackColor),
+    emissive,
+    emissiveIntensity: numberOr(model.emissiveIntensity, emissive ? 0.16 : 0, 0, 2),
+    scale: normalizeModelScale(model.scale)
+  };
+}
+
+function normalizeBehavior(value) {
+  const behavior = String(value || '').toLowerCase();
+  if (behavior === 'caster' || behavior === 'ranged' || behavior === 'projectile') return 'caster';
+  return 'melee';
+}
+
+function normalizeCombat(combat) {
+  if (!combat || typeof combat !== 'object') return null;
+  return {
+    behavior: normalizeBehavior(combat.behavior),
+    health: combat.health,
+    speed: combat.speed,
+    aggroRange: combat.aggroRange,
+    visionRange: combat.visionRange,
+    attackRate: combat.attackRate,
+    damage: combat.damage,
+    range: combat.range,
+    projectileSpeed: combat.projectileSpeed
+  };
+}
+
+function normalizeSpawnRules(rules) {
+  if (!Array.isArray(rules)) return [];
+  return rules
+    .filter(rule => rule && typeof rule === 'object')
+    .map(rule => ({
+      field: String(rule.field || ''),
+      op: String(rule.op || 'equals'),
+      value: rule.value
+    }))
+    .filter(rule => rule.field);
+}
+
+function normalizeEntity(entity) {
+  if (!entity || typeof entity !== 'object' || !entity.id) return null;
+  const category = String(entity.category || '');
+  return {
+    id: String(entity.id),
+    name: String(entity.name || entity.id),
+    category,
+    model: normalizeModel(entity.model || {}, category),
+    combat: normalizeCombat(entity.combat),
+    spawnRules: normalizeSpawnRules(entity.spawnRules)
+  };
+}
+
+function normalizeSpawnRows(rows, maxCount = 256) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter(row => row && typeof row === 'object')
+    .map(row => ({
+      entityId: String(row.entityId || ''),
+      count: integerOr(row.count, 0, 0, maxCount),
+      chancePercent: numberOr(row.chancePercent, 100, 0, 100),
+      enabled: row.enabled !== false
+    }))
+    .filter(row => row.entityId);
+}
+
+function normalizePlayerSettings(player = {}) {
+  const fallback = DEFAULT_PLAY_SETTINGS.player;
+  return {
+    maxHealth: integerOr(player.maxHealth, fallback.maxHealth, 1, 500),
+    moveSpeed: numberOr(player.moveSpeed, fallback.moveSpeed, 0.5, 20),
+    sprintSpeed: numberOr(player.sprintSpeed, fallback.sprintSpeed, 0.5, 30),
+    attackDamage: integerOr(player.attackDamage, fallback.attackDamage, 1, 200),
+    attackSpeed: numberOr(player.attackSpeed, fallback.attackSpeed, 0.1, 12),
+    attackRange: numberOr(player.attackRange, fallback.attackRange, 0.4, 10),
+    lightRadius: numberOr(player.lightRadius, fallback.lightRadius, 1, 80),
+    lightIntensity: numberOr(player.lightIntensity, fallback.lightIntensity, 0, 30),
+    lightFlicker: numberOr(player.lightFlicker, fallback.lightFlicker, 0, 5)
+  };
+}
+
 function normalizePlaySettings(settings = {}) {
   const enemyCount = Number(settings.enemyCount);
   const chestCount = Number(settings.chestCount);
+  const typeSettings = settings.enemyTypes || {};
+  const meleeSettings = typeSettings.melee || {};
+  const casterSettings = typeSettings.caster || {};
+  const entities = Array.isArray(settings.entities)
+    ? settings.entities.map(normalizeEntity).filter(Boolean)
+    : [];
+  const entityById = new Map(entities.map(entity => [entity.id, entity]));
+  const rawDungeonSettings = settings.dungeonSettings && typeof settings.dungeonSettings === 'object'
+    ? settings.dungeonSettings
+    : null;
+
   return {
     enemyCount: Number.isFinite(enemyCount) ? clamp(Math.round(enemyCount), 0, 24) : DEFAULT_PLAY_SETTINGS.enemyCount,
     chestCount: Number.isFinite(chestCount) ? clamp(Math.round(chestCount), 0, 12) : DEFAULT_PLAY_SETTINGS.chestCount,
-    oreDensity: clamp(Number(settings.oreDensity) || DEFAULT_PLAY_SETTINGS.oreDensity, 0, 3),
-    clutterDensity: clamp(Number(settings.clutterDensity) || DEFAULT_PLAY_SETTINGS.clutterDensity, 0, 3),
-    enemyMeleeChance: clamp(Number(settings.enemyMeleeChance) || DEFAULT_PLAY_SETTINGS.enemyMeleeChance, 0, 100),
-    enemyCasterChance: clamp(Number(settings.enemyCasterChance) || DEFAULT_PLAY_SETTINGS.enemyCasterChance, 0, 100),
-    enemyAggroRange: clamp(Number(settings.enemyAggroRange) || DEFAULT_PLAY_SETTINGS.enemyAggroRange, 1, 14),
-    enemyVisionRange: clamp(Number(settings.enemyVisionRange) || DEFAULT_PLAY_SETTINGS.enemyVisionRange, 2, 28)
+    oreDensity: numberOr(settings.oreDensity, DEFAULT_PLAY_SETTINGS.oreDensity, 0, 3),
+    clutterDensity: numberOr(settings.clutterDensity, DEFAULT_PLAY_SETTINGS.clutterDensity, 0, 3),
+    enemyMeleeChance: numberOr(settings.enemyMeleeChance, DEFAULT_PLAY_SETTINGS.enemyMeleeChance, 0, 100),
+    enemyCasterChance: numberOr(settings.enemyCasterChance, DEFAULT_PLAY_SETTINGS.enemyCasterChance, 0, 100),
+    enemyAggroRange: numberOr(settings.enemyAggroRange, DEFAULT_PLAY_SETTINGS.enemyAggroRange, 1, 60),
+    enemyVisionRange: numberOr(settings.enemyVisionRange, DEFAULT_PLAY_SETTINGS.enemyVisionRange, 2, 80),
+    player: normalizePlayerSettings(settings.player),
+    enemyTypes: {
+      melee: {
+        health: Math.round(numberOr(meleeSettings.health, DEFAULT_PLAY_SETTINGS.enemyTypes.melee.health, 1, 20)),
+        speed: numberOr(meleeSettings.speed, DEFAULT_PLAY_SETTINGS.enemyTypes.melee.speed, 0.25, 8),
+        attackRate: numberOr(meleeSettings.attackRate, DEFAULT_PLAY_SETTINGS.enemyTypes.melee.attackRate, 0.1, 5),
+        damage: Math.round(numberOr(meleeSettings.damage, DEFAULT_PLAY_SETTINGS.enemyTypes.melee.damage, 1, 50)),
+        range: numberOr(meleeSettings.range, DEFAULT_PLAY_SETTINGS.enemyTypes.melee.range, 0.4, 4)
+      },
+      caster: {
+        health: Math.round(numberOr(casterSettings.health, DEFAULT_PLAY_SETTINGS.enemyTypes.caster.health, 1, 20)),
+        speed: numberOr(casterSettings.speed, DEFAULT_PLAY_SETTINGS.enemyTypes.caster.speed, 0.25, 8),
+        attackRate: numberOr(casterSettings.attackRate, DEFAULT_PLAY_SETTINGS.enemyTypes.caster.attackRate, 0.1, 5),
+        damage: Math.round(numberOr(casterSettings.damage, DEFAULT_PLAY_SETTINGS.enemyTypes.caster.damage, 1, 50)),
+        range: numberOr(casterSettings.range, DEFAULT_PLAY_SETTINGS.enemyTypes.caster.range, 1, 24),
+        minRange: Math.min(ENEMY_CAST_MIN_RANGE, numberOr(casterSettings.range, DEFAULT_PLAY_SETTINGS.enemyTypes.caster.range, 1, 24) * 0.42),
+        projectileSpeed: numberOr(casterSettings.projectileSpeed, DEFAULT_PLAY_SETTINGS.enemyTypes.caster.projectileSpeed, 1, 18)
+      }
+    },
+    entities,
+    entityById,
+    hasDungeonSettings: !!rawDungeonSettings,
+    authoredSpawnRows: {
+      enemySpawns: Array.isArray(rawDungeonSettings?.enemySpawns),
+      entitySpawns: Array.isArray(rawDungeonSettings?.entitySpawns),
+      treasureSpawns: Array.isArray(rawDungeonSettings?.treasureSpawns)
+    },
+    dungeonSettings: {
+      enemySpawns: normalizeSpawnRows(rawDungeonSettings?.enemySpawns, 64),
+      entitySpawns: normalizeSpawnRows(rawDungeonSettings?.entitySpawns, 256),
+      treasureSpawns: normalizeSpawnRows(rawDungeonSettings?.treasureSpawns, 64)
+    }
   };
 }
 
@@ -383,6 +598,124 @@ function isOnOpenGraphPath(worldX, worldZ, maskMap, padding = 0.42) {
   return false;
 }
 
+function nodeTypeFor(node, startNode = null) {
+  if (!node) return 'unknown';
+  if (startNode && node.x === startNode.x && node.y === startNode.y) return 'start';
+  if (node.room) return 'room';
+  const openings = countBits(node.mask);
+  if (openings <= 1) return 'deadend';
+  if (openings >= 3) return 'junction';
+  return 'corridor';
+}
+
+function candidateContextFor({ caveLayout, maskMap, start, x, z, worldX, worldZ, summary, surface, blockedVoxels = null, includeLineOfSight = true }) {
+  const nodeContext = nearestNode(maskMap, x, z);
+  const onMainPath = isOnOpenGraphPath(worldX, worldZ, maskMap, surface === 'wall' ? 0.2 : 0.1);
+  return {
+    surface,
+    distanceFromStart: Math.hypot(worldX - start.x, worldZ - start.z),
+    nodeType: nodeTypeFor(nodeContext.node, start.node),
+    nearWall: !!summary.nearWall,
+    lineOfSightFromStart: includeLineOfSight && hasVoxelLineOfSight(
+      caveLayout.walkableVoxels,
+      blockedVoxels || EMPTY_BLOCKED_VOXELS,
+      start.x,
+      start.z,
+      worldX,
+      worldZ
+    ),
+    openNeighbors: summary.cardinalOpen,
+    onMainPath
+  };
+}
+
+function coerceBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return null;
+}
+
+function ruleValuesEqual(actual, expected) {
+  if (typeof actual === 'boolean') {
+    const expectedBoolean = coerceBoolean(expected);
+    return expectedBoolean === null ? false : actual === expectedBoolean;
+  }
+
+  const actualNumber = Number(actual);
+  const expectedNumber = Number(expected);
+  if (Number.isFinite(actualNumber) && Number.isFinite(expectedNumber)) {
+    return actualNumber === expectedNumber;
+  }
+
+  return String(actual).toLowerCase() === String(expected).toLowerCase();
+}
+
+function spawnRuleMatches(context, rule) {
+  if (!context || !rule || !(rule.field in context)) return false;
+  const actual = context[rule.field];
+  const op = String(rule.op || 'equals');
+
+  if (op === 'equals') return ruleValuesEqual(actual, rule.value);
+  if (op === 'notEquals') return !ruleValuesEqual(actual, rule.value);
+
+  const actualNumber = Number(actual);
+  const expectedNumber = Number(rule.value);
+  if (!Number.isFinite(actualNumber) || !Number.isFinite(expectedNumber)) return false;
+
+  switch (op) {
+    case 'gt':
+      return actualNumber > expectedNumber;
+    case 'gte':
+      return actualNumber >= expectedNumber;
+    case 'lt':
+      return actualNumber < expectedNumber;
+    case 'lte':
+      return actualNumber <= expectedNumber;
+    default:
+      return false;
+  }
+}
+
+function spawnRulesMatch(entity, context) {
+  const rules = entity?.spawnRules || [];
+  return rules.every(rule => spawnRuleMatches(context, rule));
+}
+
+function enabledSpawnRows(rows) {
+  return (rows || []).filter(row => row.enabled && row.count > 0);
+}
+
+function hasAuthoredSpawnRows(playSettings, key) {
+  return !!playSettings?.authoredSpawnRows?.[key];
+}
+
+function authoredRowsUseField(playSettings, keys, field) {
+  for (const key of keys) {
+    if (!hasAuthoredSpawnRows(playSettings, key)) continue;
+    for (const row of enabledSpawnRows(playSettings.dungeonSettings[key])) {
+      const entity = playSettings.entityById.get(row.entityId);
+      if (entity?.spawnRules?.some(rule => rule.field === field)) return true;
+    }
+  }
+  return false;
+}
+
+function passesSpawnChance(row, seed, entityId, candidate, salt) {
+  if (row.chancePercent >= 100) return true;
+  if (row.chancePercent <= 0) return false;
+  const roll = randomSeeded(
+    seed ^ hashString(entityId),
+    candidate.position.x * 31,
+    candidate.position.z * 37,
+    salt
+  ) * 100;
+  return roll < row.chancePercent;
+}
+
 function solidVoxelKeysFor(item) {
   const keys = [];
   const radius = item.blockRadius || item.radius || 0.42;
@@ -456,7 +789,7 @@ function oreSubtype(seed, x, z, dir) {
   return 'iron';
 }
 
-function buildOreCandidates(caveLayout, maskMap, seed, start) {
+function buildOreCandidates(caveLayout, maskMap, seed, start, options = {}) {
   const candidates = [];
   for (const key of caveLayout.walkableVoxels) {
     const [x, z] = key.split(',').map(Number);
@@ -472,6 +805,18 @@ function buildOreCandidates(caveLayout, maskMap, seed, start) {
       const subtype = oreSubtype(seed, x, z, dir);
       const rarityBoost = subtype === 'crystal' ? 0.34 : (subtype === 'copper' ? 0.16 : 0);
       const corridorPenalty = isOnOpenGraphPath(wall.x, wall.z, maskMap, 0.2) ? 0.38 : 0;
+      const context = candidateContextFor({
+        caveLayout,
+        maskMap,
+        start,
+        x,
+        z,
+        worldX: wall.x,
+        worldZ: wall.z,
+        summary,
+        surface: 'wall',
+        includeLineOfSight: !!options.includeLineOfSight
+      });
 
       candidates.push({
         type: 'ore',
@@ -488,6 +833,7 @@ function buildOreCandidates(caveLayout, maskMap, seed, start) {
           z: 0.75 + randomSeeded(seed, x, z, 340 + dir) * 0.4
         },
         tags: ['wall', 'mineral'],
+        context,
         score: 0.45 + summary.missingDirs.length * 0.16 + rarityBoost + Math.min(distanceFromStart / 90, 0.24) - corridorPenalty - nodeContext.distance * 0.006
       });
     }
@@ -543,7 +889,7 @@ function itemFromFloorCandidate(type, subtype, sourceKey, x, z, seed, score, tag
   };
 }
 
-function buildClutterCandidates(caveLayout, maskMap, seed, start) {
+function buildClutterCandidates(caveLayout, maskMap, seed, start, options = {}) {
   const candidates = [];
   for (const key of caveLayout.walkableVoxels) {
     const [x, z] = key.split(',').map(Number);
@@ -560,7 +906,20 @@ function buildClutterCandidates(caveLayout, maskMap, seed, start) {
     const roll = randomSeeded(seed, x, z, 760);
     const type = roll > 0.72 ? 'stalagmite' : (roll > 0.38 ? 'rock' : 'debris');
     const score = 0.42 + summary.missingDirs.length * 0.2 + summary.allOpen * 0.035 + Math.min(distanceFromStart / 120, 0.2);
-    candidates.push(itemFromFloorCandidate(type, type, key, x, z, seed, score, ['floor', 'clutter']));
+    const candidate = itemFromFloorCandidate(type, type, key, x, z, seed, score, ['floor', 'clutter']);
+    candidate.context = candidateContextFor({
+      caveLayout,
+      maskMap,
+      start,
+      x,
+      z,
+      worldX: candidate.position.x,
+      worldZ: candidate.position.z,
+      summary,
+      surface: 'floor',
+      includeLineOfSight: !!options.includeLineOfSight
+    });
+    candidates.push(candidate);
   }
   return candidates;
 }
@@ -586,7 +945,7 @@ function nearestWalkableAround(caveLayout, maskMap, targetX, targetZ, maxRadius 
   return candidates.sort((a, b) => a.distance - b.distance)[0] || null;
 }
 
-function chestCandidateForNode(caveLayout, maskMap, node, seed, start) {
+function chestCandidateForNode(caveLayout, maskMap, node, seed, start, options = {}) {
   const openDirs = DIR_DATA.filter(info => hasDir(node.mask, info.dir));
   if (openDirs.length !== 1) return null;
 
@@ -601,6 +960,18 @@ function chestCandidateForNode(caveLayout, maskMap, node, seed, start) {
 
   const distanceFromStart = Math.hypot((floor.x + 0.5) - start.x, (floor.z + 0.5) - start.z);
   if (distanceFromStart < 15) return null;
+  const context = candidateContextFor({
+    caveLayout,
+    maskMap,
+    start,
+    x: floor.x,
+    z: floor.z,
+    worldX: floor.x + 0.5,
+    worldZ: floor.z + 0.5,
+    summary: floor.summary,
+    surface: 'floor',
+    includeLineOfSight: !!options.includeLineOfSight
+  });
 
   return {
     type: 'chest',
@@ -613,14 +984,15 @@ function chestCandidateForNode(caveLayout, maskMap, node, seed, start) {
     solid: true,
     scale: { x: 1, y: 1, z: 1 },
     tags: ['reward', 'deadend'],
+    context,
     score: 1.2 + Math.min(distanceFromStart / 80, 0.45) + randomSeeded(seed, node.x, node.y, 810) * 0.25
   };
 }
 
-function buildChestCandidates(caveLayout, maskMap, seed, start) {
+function buildChestCandidates(caveLayout, maskMap, seed, start, options = {}) {
   const candidates = [];
   for (const node of maskMap.values()) {
-    const deadEnd = chestCandidateForNode(caveLayout, maskMap, node, seed, start);
+    const deadEnd = chestCandidateForNode(caveLayout, maskMap, node, seed, start, options);
     if (deadEnd) candidates.push(deadEnd);
   }
 
@@ -634,6 +1006,18 @@ function buildChestCandidates(caveLayout, maskMap, seed, start) {
     if (!context.node || countBits(context.node.mask) < 3) continue;
     const distanceFromStart = Math.hypot((x + 0.5) - start.x, (z + 0.5) - start.z);
     if (distanceFromStart < 18) continue;
+    const chestContext = candidateContextFor({
+      caveLayout,
+      maskMap,
+      start,
+      x,
+      z,
+      worldX: x + 0.5,
+      worldZ: z + 0.5,
+      summary,
+      surface: 'floor',
+      includeLineOfSight: !!options.includeLineOfSight
+    });
 
     candidates.push({
       type: 'chest',
@@ -646,6 +1030,7 @@ function buildChestCandidates(caveLayout, maskMap, seed, start) {
       solid: true,
       scale: { x: 1, y: 1, z: 1 },
       tags: ['reward', 'pocket'],
+      context: chestContext,
       score: 0.62 + summary.missingDirs.length * 0.13 + Math.min(distanceFromStart / 95, 0.36)
     });
   }
@@ -681,11 +1066,145 @@ function addSolidScatterItem(items, item, caveLayout, maskMap, blockedVoxels, cr
   return true;
 }
 
+function multiplyScale(a = { x: 1, y: 1, z: 1 }, b = { x: 1, y: 1, z: 1 }) {
+  return {
+    x: (a.x || 1) * (b.x || 1),
+    y: (a.y || 1) * (b.y || 1),
+    z: (a.z || 1) * (b.z || 1)
+  };
+}
+
+function entityText(entity) {
+  return `${entity?.category || ''} ${entity?.model?.kind || ''} ${entity?.id || ''}`.toLowerCase();
+}
+
+function surfaceRuleValue(entity) {
+  const rule = (entity?.spawnRules || []).find(candidateRule => (
+    candidateRule.field === 'surface' &&
+    candidateRule.op === 'equals' &&
+    typeof candidateRule.value === 'string'
+  ));
+  return rule ? rule.value.toLowerCase() : null;
+}
+
+function entityPrefersWall(entity) {
+  const surface = surfaceRuleValue(entity);
+  if (surface === 'wall') return true;
+  if (surface === 'floor') return false;
+  const text = entityText(entity);
+  return text.includes('resource') || text.includes('mineral') || text.includes('ore') || text.includes('crystal');
+}
+
+function entityPrefersTreasure(entity) {
+  const text = entityText(entity);
+  return text.includes('treasure') || text.includes('loot') || text.includes('chest');
+}
+
+function candidatesForEntity(entity, rowType, pools) {
+  const surface = surfaceRuleValue(entity);
+  if (surface === 'wall') return pools.ore;
+  if (surface === 'floor' && rowType !== 'treasure') return pools.clutter;
+  if (rowType === 'treasure' || entityPrefersTreasure(entity)) return pools.chest;
+  if (entityPrefersWall(entity)) return pools.ore;
+  return pools.clutter;
+}
+
+function scatterMinDistanceFor(item, rowType) {
+  if (rowType === 'treasure' || entityPrefersTreasure(item.entity)) return 13.5;
+  if (item.context?.surface === 'wall') return 4.2;
+  return 2.8;
+}
+
+function scatterDistanceFilterFor(item, rowType) {
+  if (rowType === 'treasure' || entityPrefersTreasure(item.entity)) {
+    return existing => existing.type === 'chest' || entityPrefersTreasure(existing.entity);
+  }
+  if (item.context?.surface === 'wall') {
+    return existing => existing.context?.surface === 'wall' || existing.type === 'ore';
+  }
+  return existing => existing.context?.surface !== 'wall' && existing.type !== 'ore';
+}
+
+function createEntityScatterItem(candidate, entity, rowType, rowIndex) {
+  const model = entity.model || normalizeModel({}, entity.category);
+  const surface = candidate.context?.surface || 'floor';
+  const tags = [...new Set([
+    ...(candidate.tags || []),
+    entity.category,
+    rowType,
+    entity.id
+  ].filter(Boolean))];
+  const item = {
+    ...candidate,
+    type: entity.category || model.kind || candidate.type,
+    subtype: entity.id,
+    entityId: entity.id,
+    entityName: entity.name,
+    entity,
+    model,
+    sourceKey: `${candidate.sourceKey}:${rowType}:${rowIndex}:${entity.id}`,
+    scale: multiplyScale(candidate.scale, model.scale),
+    tags
+  };
+
+  if (surface === 'wall') {
+    item.solid = false;
+    item.blockRadius = 0;
+  } else if (rowType === 'treasure' || model.kind === 'chest') {
+    item.solid = true;
+    item.radius = Math.max(item.radius || 0, 0.52);
+    item.blockRadius = Math.max(item.blockRadius || 0, 0.46);
+  }
+
+  return item;
+}
+
+function placeAuthoredScatterRows({ rows, rowType, playSettings, pools, items, caveLayout, maskMap, blockedVoxels, criticalKeys, seed }) {
+  const activeRows = enabledSpawnRows(rows);
+  for (let rowIndex = 0; rowIndex < activeRows.length; rowIndex++) {
+    const row = activeRows[rowIndex];
+    const entity = playSettings.entityById.get(row.entityId);
+    if (!entity || entity.combat) continue;
+
+    const baseCandidates = candidatesForEntity(entity, rowType, pools);
+    const sortedCandidates = sortScatterCandidates(
+      baseCandidates,
+      seed ^ hashString(`${rowType}:${entity.id}:${rowIndex}`),
+      1210 + rowIndex * 37
+    );
+
+    let placed = 0;
+    for (const candidate of sortedCandidates) {
+      if (placed >= row.count) break;
+      if (!spawnRulesMatch(entity, candidate.context)) continue;
+      if (!passesSpawnChance(row, seed, entity.id, candidate, 1240 + rowIndex * 41)) continue;
+
+      const item = createEntityScatterItem(candidate, entity, rowType, rowIndex);
+      if (!isFarFromItems(item, items, scatterMinDistanceFor(item, rowType), scatterDistanceFilterFor(item, rowType))) continue;
+
+      if (item.solid) {
+        if (!addSolidScatterItem(items, item, caveLayout, maskMap, blockedVoxels, criticalKeys)) continue;
+      } else {
+        pushScatterItem(items, item);
+      }
+      placed++;
+    }
+  }
+}
+
+function scatterKindIndex(item) {
+  const defaultIndex = SCATTER_KIND_ORDER.indexOf(item.type);
+  if (defaultIndex >= 0) return defaultIndex;
+  if (item.context?.surface === 'wall' || entityPrefersWall(item.entity)) return 0;
+  if (entityPrefersTreasure(item.entity)) return 1;
+  return 3;
+}
+
 function generateScatterItems(maskMap, caveLayout, baseSeed, playSettings = DEFAULT_PLAY_SETTINGS) {
   const seed = scatterSeedFor(maskMap, baseSeed);
   const floorCount = caveLayout.walkableVoxels.size;
   const startNode = maskMap.get(keyFor(0, 0)) || maskMap.values().next().value;
-  const start = { x: startNode.x * VOXELS_PER_TILE, z: startNode.y * VOXELS_PER_TILE };
+  const start = { x: startNode.x * VOXELS_PER_TILE, z: startNode.y * VOXELS_PER_TILE, node: startNode };
   const items = [];
   const blockedVoxels = new Set();
   const criticalKeys = buildCriticalTraversalKeys(maskMap, caveLayout.walkableVoxels);
@@ -699,32 +1218,74 @@ function generateScatterItems(maskMap, caveLayout, baseSeed, playSettings = DEFA
     clutter: clutterTarget
   };
 
-  const oreCandidates = sortScatterCandidates(buildOreCandidates(caveLayout, maskMap, seed, start), seed, 910);
-  for (const candidate of oreCandidates) {
-    if (items.filter(item => item.type === 'ore').length >= targets.ore) break;
-    if (!isFarFromItems(candidate, items, 4.2, item => item.type === 'ore')) continue;
-    pushScatterItem(items, candidate);
-  }
+  const hasAuthoredEntityRows = hasAuthoredSpawnRows(playSettings, 'entitySpawns');
+  const hasAuthoredTreasureRows = hasAuthoredSpawnRows(playSettings, 'treasureSpawns');
+  const includeScatterLineOfSight = authoredRowsUseField(playSettings, ['entitySpawns', 'treasureSpawns'], 'lineOfSightFromStart');
 
-  const chestCandidates = sortScatterCandidates(buildChestCandidates(caveLayout, maskMap, seed, start), seed, 920);
-  for (const candidate of chestCandidates) {
-    if (items.filter(item => item.type === 'chest').length >= targets.chest) break;
-    if (!isFarFromItems(candidate, items, 13.5, item => item.type === 'chest')) continue;
-    addSolidScatterItem(items, candidate, caveLayout, maskMap, blockedVoxels, criticalKeys);
-  }
+  const pools = {
+    ore: buildOreCandidates(caveLayout, maskMap, seed, start, { includeLineOfSight: includeScatterLineOfSight }),
+    chest: buildChestCandidates(caveLayout, maskMap, seed, start, { includeLineOfSight: includeScatterLineOfSight }),
+    clutter: buildClutterCandidates(caveLayout, maskMap, seed, start, { includeLineOfSight: includeScatterLineOfSight })
+  };
 
-  const clutterCandidates = sortScatterCandidates(buildClutterCandidates(caveLayout, maskMap, seed, start), seed, 930);
-  for (const candidate of clutterCandidates) {
-    if (items.filter(item => ['rock', 'stalagmite', 'debris'].includes(item.type)).length >= targets.clutter) break;
-    if (!isFarFromItems(candidate, items, 2.8, item => item.type !== 'ore')) continue;
-    if (candidate.solid) {
-      addSolidScatterItem(items, candidate, caveLayout, maskMap, blockedVoxels, criticalKeys);
-    } else {
+  if (hasAuthoredEntityRows) {
+    placeAuthoredScatterRows({
+      rows: playSettings.dungeonSettings.entitySpawns,
+      rowType: 'entity',
+      playSettings,
+      pools,
+      items,
+      caveLayout,
+      maskMap,
+      blockedVoxels,
+      criticalKeys,
+      seed
+    });
+  } else {
+    const oreCandidates = sortScatterCandidates(pools.ore, seed, 910);
+    for (const candidate of oreCandidates) {
+      if (items.filter(item => item.type === 'ore').length >= targets.ore) break;
+      if (!isFarFromItems(candidate, items, 4.2, item => item.type === 'ore')) continue;
       pushScatterItem(items, candidate);
     }
   }
 
-  items.sort((a, b) => SCATTER_KIND_ORDER.indexOf(a.type) - SCATTER_KIND_ORDER.indexOf(b.type) || a.id.localeCompare(b.id));
+  if (hasAuthoredTreasureRows) {
+    placeAuthoredScatterRows({
+      rows: playSettings.dungeonSettings.treasureSpawns,
+      rowType: 'treasure',
+      playSettings,
+      pools,
+      items,
+      caveLayout,
+      maskMap,
+      blockedVoxels,
+      criticalKeys,
+      seed: seed ^ hashString('treasure')
+    });
+  } else {
+    const chestCandidates = sortScatterCandidates(pools.chest, seed, 920);
+    for (const candidate of chestCandidates) {
+      if (items.filter(item => item.type === 'chest').length >= targets.chest) break;
+      if (!isFarFromItems(candidate, items, 13.5, item => item.type === 'chest')) continue;
+      addSolidScatterItem(items, candidate, caveLayout, maskMap, blockedVoxels, criticalKeys);
+    }
+  }
+
+  if (!hasAuthoredEntityRows) {
+    const clutterCandidates = sortScatterCandidates(pools.clutter, seed, 930);
+    for (const candidate of clutterCandidates) {
+      if (items.filter(item => ['rock', 'stalagmite', 'debris'].includes(item.type)).length >= targets.clutter) break;
+      if (!isFarFromItems(candidate, items, 2.8, item => item.type !== 'ore')) continue;
+      if (candidate.solid) {
+        addSolidScatterItem(items, candidate, caveLayout, maskMap, blockedVoxels, criticalKeys);
+      } else {
+        pushScatterItem(items, candidate);
+      }
+    }
+  }
+
+  items.sort((a, b) => scatterKindIndex(a) - scatterKindIndex(b) || a.id.localeCompare(b.id));
   return { items, blockedVoxels, seed };
 }
 
@@ -749,12 +1310,80 @@ function enemyKindFor(seed, candidate, playSettings) {
   return randomSeeded(seed, candidate.position.x, candidate.position.z, 1130) * total < caster ? 'caster' : 'melee';
 }
 
-function generateEnemies(maskMap, caveLayout, blockedVoxels, baseSeed, playSettings = DEFAULT_PLAY_SETTINGS) {
-  const seed = hashString(`enemies|${baseSeed || 'manual'}|${mapSignature(maskMap)}`);
-  const startNode = maskMap.get(keyFor(0, 0)) || maskMap.values().next().value;
-  const start = { x: startNode.x * VOXELS_PER_TILE, z: startNode.y * VOXELS_PER_TILE };
-  const defaultTargetCount = clamp(Math.round(caveLayout.walkableVoxels.size / 850), 2, 7);
-  const targetCount = playSettings.enemyCount === null ? defaultTargetCount : playSettings.enemyCount;
+function statsForEnemyKind(kind, playSettings) {
+  const fallback = DEFAULT_PLAY_SETTINGS.enemyTypes[kind] || DEFAULT_PLAY_SETTINGS.enemyTypes.melee;
+  const stats = playSettings.enemyTypes?.[kind] || fallback;
+  const range = numberOr(stats.range, fallback.range, kind === 'caster' ? 1 : 0.4, kind === 'caster' ? 24 : 4);
+  return {
+    kind,
+    maxHealth: integerOr(stats.health, fallback.health, 1, 50),
+    speed: numberOr(stats.speed, fallback.speed, 0.25, 8),
+    attackRate: numberOr(stats.attackRate, fallback.attackRate, 0.1, 5),
+    damage: integerOr(stats.damage, fallback.damage, 1, 80),
+    range,
+    minRange: kind === 'caster' ? Math.min(ENEMY_CAST_MIN_RANGE, range * 0.42) : 0,
+    projectileSpeed: kind === 'caster' ? numberOr(stats.projectileSpeed, ENEMY_PROJECTILE_SPEED, 1, 18) : 0,
+    aggroRange: numberOr(playSettings.enemyAggroRange, ENEMY_AGGRO_RANGE, 1, 60),
+    visionRange: numberOr(playSettings.enemyVisionRange, ENEMY_VISION_RANGE, 2, 80)
+  };
+}
+
+function statsForEntityCombat(entity, playSettings) {
+  const combat = entity.combat || {};
+  const kind = normalizeBehavior(combat.behavior);
+  const fallback = statsForEnemyKind(kind, playSettings);
+  const range = numberOr(combat.range, fallback.range, kind === 'caster' ? 1 : 0.4, kind === 'caster' ? 30 : 6);
+  return {
+    kind,
+    maxHealth: integerOr(combat.health, fallback.maxHealth, 1, 100),
+    speed: numberOr(combat.speed, fallback.speed, 0.25, 10),
+    attackRate: numberOr(combat.attackRate, fallback.attackRate, 0.1, 8),
+    damage: integerOr(combat.damage, fallback.damage, 1, 120),
+    range,
+    minRange: kind === 'caster' ? Math.min(ENEMY_CAST_MIN_RANGE, range * 0.42) : 0,
+    projectileSpeed: kind === 'caster' ? numberOr(combat.projectileSpeed, fallback.projectileSpeed || ENEMY_PROJECTILE_SPEED, 1, 24) : 0,
+    aggroRange: numberOr(combat.aggroRange, fallback.aggroRange, 1, 80),
+    visionRange: numberOr(combat.visionRange, fallback.visionRange, 2, 100)
+  };
+}
+
+function createEnemyFromCandidate(candidate, entity, stats, seed, index) {
+  const maxHealth = stats.maxHealth;
+  const attackCooldownDuration = 1 / Math.max(0.1, stats.attackRate);
+  const entityPrefix = entity ? `${entity.id}-` : '';
+  return {
+    id: `enemy-${entityPrefix}${index + 1}-${hashString(candidate.key).toString(36)}`,
+    entityId: entity?.id || null,
+    entityName: entity?.name || null,
+    entity: entity || null,
+    model: entity?.model || null,
+    kind: stats.kind,
+    x: candidate.position.x,
+    z: candidate.position.z,
+    yaw: candidate.yaw,
+    state: 'idle',
+    health: maxHealth,
+    maxHealth,
+    speed: stats.speed,
+    damage: stats.damage,
+    range: stats.range,
+    minRange: stats.minRange || 0,
+    projectileSpeed: stats.projectileSpeed || 0,
+    aggroRange: stats.aggroRange,
+    visionRange: stats.visionRange,
+    attackCooldownDuration,
+    path: [],
+    pathTimer: randomSeeded(seed, candidate.position.x, candidate.position.z, 1120) * ENEMY_PATH_REFRESH,
+    attackCooldown: randomSeeded(seed, candidate.position.x, candidate.position.z, 1140) * attackCooldownDuration,
+    hitTimer: 0,
+    aggroFlash: 0,
+    mesh: null,
+    eyeMaterial: null,
+    bodyMaterial: null
+  };
+}
+
+function buildEnemyCandidates(maskMap, caveLayout, blockedVoxels, seed, start) {
   const candidates = [];
 
   for (const key of caveLayout.walkableVoxels) {
@@ -772,40 +1401,80 @@ function generateEnemies(maskMap, caveLayout, blockedVoxels, baseSeed, playSetti
     const context = nearestNode(maskMap, x, z);
     const deadEndBoost = context.node && countBits(context.node.mask) === 1 ? 0.42 : 0;
     const pocketBoost = summary.nearWall ? 0.18 : 0;
-    const hiddenBoost = hasVoxelLineOfSight(caveLayout.walkableVoxels, blockedVoxels, start.x, start.z, wx, wz) ? -0.6 : 0.18;
+    const spawnContext = candidateContextFor({
+      caveLayout,
+      maskMap,
+      start,
+      x,
+      z,
+      worldX: wx,
+      worldZ: wz,
+      summary,
+      surface: 'floor',
+      blockedVoxels
+    });
+    const hiddenBoost = spawnContext.lineOfSightFromStart ? -0.6 : 0.18;
     candidates.push({
       key,
       position: { x: wx, z: wz },
       yaw: randomSeeded(seed, x, z, 1100) * Math.PI * 2,
+      context: spawnContext,
       score: distanceFromStart / 120 + deadEndBoost + pocketBoost + hiddenBoost + randomSeeded(seed, x, z, 1110) * 0.55
     });
   }
 
+  return candidates;
+}
+
+function generateAuthoredEnemies(candidates, playSettings, seed) {
+  const enemies = [];
+  const rows = enabledSpawnRows(playSettings.dungeonSettings.enemySpawns);
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex];
+    const entity = playSettings.entityById.get(row.entityId);
+    if (!entity?.combat) continue;
+
+    const stats = statsForEntityCombat(entity, playSettings);
+    const rowCandidates = candidates
+      .map(candidate => ({
+        ...candidate,
+        score: candidate.score + randomSeeded(seed ^ hashString(entity.id), candidate.position.x, candidate.position.z, 1310 + rowIndex * 43) * 0.55
+      }))
+      .sort((a, b) => b.score - a.score);
+
+    let spawned = 0;
+    for (const candidate of rowCandidates) {
+      if (spawned >= row.count) break;
+      if (enemies.some(enemy => Math.hypot(enemy.x - candidate.position.x, enemy.z - candidate.position.z) < 10)) continue;
+      if (!spawnRulesMatch(entity, candidate.context)) continue;
+      if (!passesSpawnChance(row, seed, entity.id, candidate, 1330 + rowIndex * 47)) continue;
+      enemies.push(createEnemyFromCandidate(candidate, entity, stats, seed, enemies.length));
+      spawned++;
+    }
+  }
+
+  return enemies;
+}
+
+function generateEnemies(maskMap, caveLayout, blockedVoxels, baseSeed, playSettings = DEFAULT_PLAY_SETTINGS) {
+  const seed = hashString(`enemies|${baseSeed || 'manual'}|${mapSignature(maskMap)}`);
+  const startNode = maskMap.get(keyFor(0, 0)) || maskMap.values().next().value;
+  const start = { x: startNode.x * VOXELS_PER_TILE, z: startNode.y * VOXELS_PER_TILE, node: startNode };
+  const candidates = buildEnemyCandidates(maskMap, caveLayout, blockedVoxels, seed, start);
+
+  if (hasAuthoredSpawnRows(playSettings, 'enemySpawns')) {
+    return { enemies: generateAuthoredEnemies(candidates, playSettings, seed), seed };
+  }
+
+  const defaultTargetCount = clamp(Math.round(caveLayout.walkableVoxels.size / 850), 2, 7);
+  const targetCount = playSettings.enemyCount === null ? defaultTargetCount : playSettings.enemyCount;
   candidates.sort((a, b) => b.score - a.score);
   const enemies = [];
   for (const candidate of candidates) {
     if (enemies.length >= targetCount) break;
     if (enemies.some(enemy => Math.hypot(enemy.x - candidate.position.x, enemy.z - candidate.position.z) < 10)) continue;
     const kind = enemyKindFor(seed, candidate, playSettings);
-    const maxHealth = kind === 'caster' ? 2 : 3;
-    enemies.push({
-      id: `enemy-${enemies.length + 1}-${hashString(candidate.key).toString(36)}`,
-      kind,
-      x: candidate.position.x,
-      z: candidate.position.z,
-      yaw: candidate.yaw,
-      state: 'idle',
-      health: maxHealth,
-      maxHealth,
-      path: [],
-      pathTimer: randomSeeded(seed, candidate.position.x, candidate.position.z, 1120) * ENEMY_PATH_REFRESH,
-      attackCooldown: randomSeeded(seed, candidate.position.x, candidate.position.z, 1140) * (kind === 'caster' ? ENEMY_CAST_COOLDOWN : ENEMY_MELEE_COOLDOWN),
-      hitTimer: 0,
-      aggroFlash: 0,
-      mesh: null,
-      eyeMaterial: null,
-      bodyMaterial: null
-    });
+    enemies.push(createEnemyFromCandidate(candidate, null, statsForEnemyKind(kind, playSettings), seed, enemies.length));
   }
 
   return { enemies, seed };
@@ -1074,6 +1743,41 @@ function scatterMaterial(THREE, color, emissive = 0x000000, emissiveIntensity = 
   });
 }
 
+function createModelGeometry(THREE, model) {
+  const kind = String(model?.kind || 'box').toLowerCase();
+  if (kind === 'ore' || kind === 'crystal' || kind === 'gem') return new THREE.BoxGeometry(0.58, 0.34, 0.12);
+  if (kind === 'rock' || kind === 'boulder') return new THREE.BoxGeometry(0.82, 0.55, 0.76);
+  if (kind === 'stalagmite' || kind === 'spike') return new THREE.ConeGeometry(0.42, 1, 5);
+  if (kind === 'debris' || kind === 'plank') return new THREE.BoxGeometry(0.42, 0.16, 0.34);
+  if (kind === 'chest' || kind === 'crate') return new THREE.BoxGeometry(1.08, 0.68, 0.76);
+  if (kind === 'sphere' || kind === 'orb') return new THREE.SphereGeometry(0.42, 10, 8);
+  if (kind === 'cylinder' || kind === 'barrel') return new THREE.CylinderGeometry(0.36, 0.36, 0.8, 8);
+  if (kind === 'cone') return new THREE.ConeGeometry(0.42, 0.9, 8);
+  return new THREE.BoxGeometry(0.72, 0.72, 0.72);
+}
+
+function addAuthoredScatterMeshes(THREE, group, items) {
+  const batches = new Map();
+  for (const item of items) {
+    if (!item.entity || !item.model) continue;
+    const model = item.model;
+    const key = `${item.entityId}|${model.kind}|${model.color}|${model.emissive}|${model.emissiveIntensity}`;
+    if (!batches.has(key)) batches.set(key, []);
+    batches.get(key).push(item);
+  }
+
+  for (const batchItems of batches.values()) {
+    const model = batchItems[0].model;
+    addInstancedScatterMesh(
+      THREE,
+      group,
+      batchItems,
+      createModelGeometry(THREE, model),
+      scatterMaterial(THREE, model.color, model.emissive, model.emissiveIntensity)
+    );
+  }
+}
+
 function applyInstanceTransform(THREE, dummy, item) {
   const scale = item.scale || { x: 1, y: 1, z: 1 };
   dummy.position.set(item.position.x, item.position.y, item.position.z);
@@ -1142,66 +1846,104 @@ function createScatterGroup(THREE, scatter) {
   const group = new THREE.Group();
   group.name = 'cave-scatter';
   const items = scatter.items || [];
+  const fallbackItems = items.filter(item => !item.entity);
+  addAuthoredScatterMeshes(THREE, group, items);
 
   const oreGeometry = new THREE.BoxGeometry(0.58, 0.34, 0.12);
-  addInstancedScatterMesh(THREE, group, groupedItems(items, 'ore', 'iron'), oreGeometry.clone(), scatterMaterial(THREE, 0x8d9990, 0x141816, 0.08));
-  addInstancedScatterMesh(THREE, group, groupedItems(items, 'ore', 'copper'), oreGeometry.clone(), scatterMaterial(THREE, 0xb87534, 0x2c1205, 0.14));
-  addInstancedScatterMesh(THREE, group, groupedItems(items, 'ore', 'crystal'), oreGeometry.clone(), scatterMaterial(THREE, 0x4bb8c4, 0x0f3a45, 0.28));
+  addInstancedScatterMesh(THREE, group, groupedItems(fallbackItems, 'ore', 'iron'), oreGeometry.clone(), scatterMaterial(THREE, 0x8d9990, 0x141816, 0.08));
+  addInstancedScatterMesh(THREE, group, groupedItems(fallbackItems, 'ore', 'copper'), oreGeometry.clone(), scatterMaterial(THREE, 0xb87534, 0x2c1205, 0.14));
+  addInstancedScatterMesh(THREE, group, groupedItems(fallbackItems, 'ore', 'crystal'), oreGeometry.clone(), scatterMaterial(THREE, 0x4bb8c4, 0x0f3a45, 0.28));
   oreGeometry.dispose();
 
   addInstancedScatterMesh(
     THREE,
     group,
-    groupedItems(items, 'rock'),
+    groupedItems(fallbackItems, 'rock'),
     new THREE.BoxGeometry(0.82, 0.55, 0.76),
     scatterMaterial(THREE, 0x37352d)
   );
   addInstancedScatterMesh(
     THREE,
     group,
-    groupedItems(items, 'stalagmite'),
+    groupedItems(fallbackItems, 'stalagmite'),
     new THREE.ConeGeometry(0.42, 1, 5),
     scatterMaterial(THREE, 0x4b4537)
   );
   addInstancedScatterMesh(
     THREE,
     group,
-    groupedItems(items, 'debris'),
+    groupedItems(fallbackItems, 'debris'),
     new THREE.BoxGeometry(0.42, 0.16, 0.34),
     scatterMaterial(THREE, 0x2f2c24)
   );
 
-  for (const chest of groupedItems(items, 'chest')) {
+  for (const chest of groupedItems(fallbackItems, 'chest')) {
     group.add(createChestMesh(THREE, chest));
   }
 
   return group;
 }
 
+function scaleColor(color, factor) {
+  const r = clamp(Math.round(((color >> 16) & 255) * factor), 0, 255);
+  const g = clamp(Math.round(((color >> 8) & 255) * factor), 0, 255);
+  const b = clamp(Math.round((color & 255) * factor), 0, 255);
+  return (r << 16) | (g << 8) | b;
+}
+
+function mixColor(color, target, amount) {
+  const mix = clamp(amount, 0, 1);
+  const r = Math.round(((color >> 16) & 255) * (1 - mix) + ((target >> 16) & 255) * mix);
+  const g = Math.round(((color >> 8) & 255) * (1 - mix) + ((target >> 8) & 255) * mix);
+  const b = Math.round((color & 255) * (1 - mix) + (target & 255) * mix);
+  return (r << 16) | (g << 8) | b;
+}
+
+function enemyBodyGeometry(THREE, modelKind) {
+  if (modelKind === 'sphere' || modelKind === 'orb' || modelKind === 'slime') {
+    const geometry = new THREE.SphereGeometry(0.48, 10, 8);
+    return { geometry, y: 0.68 };
+  }
+  if (modelKind === 'cone' || modelKind === 'spike') {
+    const geometry = new THREE.ConeGeometry(0.46, 0.98, 8);
+    return { geometry, y: 0.52 };
+  }
+  return { geometry: new THREE.BoxGeometry(0.72, 0.92, 0.5), y: 0.56 };
+}
+
 function createEnemyMesh(THREE, enemy) {
   const group = new THREE.Group();
   group.name = enemy.id;
   const caster = enemy.kind === 'caster';
+  const model = enemy.model;
+  const modelKind = model?.kind || '';
+  const defaultBodyColor = caster ? 0x202436 : 0x223027;
+  const defaultHeadColor = caster ? 0x191b2a : 0x19231d;
+  const bodyColor = model?.color ?? defaultBodyColor;
+  const headColor = model ? scaleColor(bodyColor, 0.72) : defaultHeadColor;
+  const emissive = model?.emissive || 0x000000;
+  const emissiveIntensity = model?.emissiveIntensity || 0;
 
   const bodyMaterial = new THREE.MeshLambertMaterial({
-    color: caster ? 0x202436 : 0x223027,
-    emissive: 0x000000,
-    emissiveIntensity: 0,
+    color: bodyColor,
+    emissive,
+    emissiveIntensity,
     fog: true
   });
   const headMaterial = new THREE.MeshLambertMaterial({
-    color: caster ? 0x191b2a : 0x19231d,
-    emissive: 0x000000,
-    emissiveIntensity: 0,
+    color: headColor,
+    emissive,
+    emissiveIntensity: emissiveIntensity * 0.75,
     fog: true
   });
   const eyeMaterial = new THREE.MeshLambertMaterial({
-    color: 0x21180e,
+    color: emissive || 0x21180e,
     fog: true
   });
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.92, 0.5), bodyMaterial);
-  body.position.y = 0.56;
+  const bodyShape = enemyBodyGeometry(THREE, modelKind);
+  const body = new THREE.Mesh(bodyShape.geometry, bodyMaterial);
+  body.position.y = bodyShape.y;
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.42), headMaterial);
   head.position.set(0, 1.18, -0.03);
   const leftEye = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.05, 0.03), eyeMaterial);
@@ -1219,6 +1961,13 @@ function createEnemyMesh(THREE, enemy) {
 
   enemy.bodyMaterial = bodyMaterial;
   enemy.eyeMaterial = eyeMaterial;
+  enemy.idleBodyColor = bodyColor;
+  enemy.alertBodyColor = model ? mixColor(bodyColor, caster ? 0x6670aa : 0x887044, 0.32) : (caster ? 0x34324a : 0x2f3d30);
+  enemy.eyeIdleColor = emissive || 0x21180e;
+  enemy.eyeAlertColor = emissive || 0x4a1710;
+  enemy.eyeFlashColor = emissive ? scaleColor(emissive, 1.45) : 0x9a5d2d;
+  enemy.baseMeshScale = model?.scale || { x: 1, y: 1, z: 1 };
+  group.scale.set(enemy.baseMeshScale.x, enemy.baseMeshScale.y, enemy.baseMeshScale.z);
   enemy.mesh = group;
   return group;
 }
@@ -1274,6 +2023,7 @@ export function createPlay3d(elements, callbacks) {
     getPlacedSize,
     getScatterSeed,
     getPlaySettings,
+    getVoxelDungeonState,
     setValidationResult,
     showToast
   } = callbacks;
@@ -1318,6 +2068,7 @@ export function createPlay3d(elements, callbacks) {
       minimapCamera: new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 500),
       player: { x: 0, z: 0, yaw: 0, pitch: 0, health: PLAYER_MAX_HEALTH, maxHealth: PLAYER_MAX_HEALTH, invulnTimer: 0, dead: false },
       map: null,
+      voxelLayout: null,
       playSettings: normalizePlaySettings(),
       walkableVoxels: null,
       torchLight: null,
@@ -1356,6 +2107,7 @@ export function createPlay3d(elements, callbacks) {
     disposeScene(runtime.minimapScene);
     runtime.playerMarker = null;
     runtime.minimapData = null;
+    runtime.voxelLayout = null;
     runtime.scatterItems = [];
     runtime.scatterGroup = null;
     runtime.solidScatterVoxels.clear();
@@ -1421,18 +2173,41 @@ export function createPlay3d(elements, callbacks) {
     return DIR.N;
   }
 
-  function buildPlayScene(runtime, maskMap, validation) {
+  async function textureFromVoxelState(THREE, voxelState) {
+    const settings = voxelState?.settings;
+    const asset = voxelState?.textureAsset;
+    if (!settings?.useTexture || !asset?.dataUrl) return null;
+    const texture = await new Promise((resolve, reject) => {
+      new THREE.TextureLoader().load(asset.dataUrl, resolve, undefined, reject);
+    });
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = settings.pixelated ? THREE.NearestFilter : THREE.LinearFilter;
+    texture.minFilter = settings.pixelated ? THREE.NearestMipmapNearestFilter : THREE.LinearMipmapLinearFilter;
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  async function buildPlayScene(runtime, maskMap, validation, voxelState = null) {
     const { THREE } = runtime;
     disposePlayScene(runtime);
-    runtime.map = maskMap;
+    const proceduralLayout = voxelState?.layout && !voxelState.error ? voxelState.layout : null;
+    const activeMaskMap = proceduralLayout?.maskMap || maskMap;
+    runtime.map = activeMaskMap;
     runtime.playSettings = normalizePlaySettings(getPlaySettings ? getPlaySettings() : {});
+    const playerSettings = runtime.playSettings.player;
+    runtime.player.maxHealth = playerSettings.maxHealth;
     runtime.scene.background = new THREE.Color(0x020202);
     runtime.scene.fog = new THREE.Fog(0x020202, 9, 34);
 
-    const caveLayout = createCaveLayout(maskMap);
-    const terrain = buildVoxelCaveMesh(THREE, caveLayout);
-    const scatter = generateScatterItems(maskMap, caveLayout, getScatterSeed ? getScatterSeed() : 'manual', runtime.playSettings);
-    const enemySet = generateEnemies(maskMap, caveLayout, scatter.blockedVoxels, getScatterSeed ? getScatterSeed() : 'manual', runtime.playSettings);
+    const caveLayout = proceduralLayout || createCaveLayout(activeMaskMap);
+    runtime.voxelLayout = proceduralLayout;
+    const texture = proceduralLayout ? await textureFromVoxelState(THREE, voxelState) : null;
+    const terrain = proceduralLayout
+      ? buildVoxelDungeonMesh(THREE, caveLayout, { texture })
+      : buildVoxelCaveMesh(THREE, caveLayout);
+    const scatter = generateScatterItems(activeMaskMap, caveLayout, getScatterSeed ? getScatterSeed() : 'manual', runtime.playSettings);
+    const enemySet = generateEnemies(activeMaskMap, caveLayout, scatter.blockedVoxels, getScatterSeed ? getScatterSeed() : 'manual', runtime.playSettings);
     runtime.walkableVoxels = caveLayout.walkableVoxels;
     runtime.scatterItems = scatter.items;
     runtime.solidScatterVoxels = scatter.blockedVoxels;
@@ -1459,13 +2234,13 @@ export function createPlay3d(elements, callbacks) {
     const ambient = new THREE.AmbientLight(0x101414, 0.035);
     runtime.scene.add(ambient);
 
-    runtime.torchLight = new THREE.PointLight(0xff8a38, 6.2, 16.5, 2.0);
+    runtime.torchLight = new THREE.PointLight(0xff8a38, playerSettings.lightIntensity, playerSettings.lightRadius, 2.0);
     runtime.torchLight.position.set(0, -0.18, 0.1);
     runtime.camera.add(runtime.torchLight);
     runtime.swordSlash = createSwordSlash(THREE);
     runtime.camera.add(runtime.swordSlash);
 
-    const start = maskMap.get(keyFor(0, 0)) || maskMap.values().next().value;
+    const start = activeMaskMap.get(keyFor(0, 0)) || activeMaskMap.values().next().value;
     runtime.player.x = start.x * PLAY_TILE_SIZE;
     runtime.player.z = start.y * PLAY_TILE_SIZE;
     runtime.player.yaw = yawForDir(firstOpenDir(start.mask));
@@ -1477,14 +2252,23 @@ export function createPlay3d(elements, callbacks) {
     updatePlayCamera(runtime);
     updatePlayerHealthHud(runtime);
     revealMinimapArea(runtime);
-    playSceneLabel = `Voxel Cave - ${validation.cells} cells, ${terrain.faceCount} faces, ${scatter.items.length} props, ${enemySet.enemies.length} enemies`;
+    playSceneLabel = `${proceduralLayout ? 'Procedural Cave' : 'Voxel Cave'} - ${validation.cells} cells, ${terrain.faceCount} faces, ${scatter.items.length} props, ${enemySet.enemies.length} enemies`;
     playStatus.textContent = playSceneLabel;
   }
 
   function canStandOnVoxel(runtime, x, z) {
     if (!runtime.walkableVoxels) return true;
     const key = voxelKey(Math.floor(x), Math.floor(z));
-    return runtime.walkableVoxels.has(key) && !runtime.solidScatterVoxels.has(key);
+    if (!runtime.walkableVoxels.has(key) || runtime.solidScatterVoxels.has(key)) return false;
+    if (runtime.voxelLayout && !hasVoxelDungeonHeadroomAt(runtime.voxelLayout, x, z, PLAY_EYE_HEIGHT + 0.25)) return false;
+    return true;
+  }
+
+  function runtimeLineOfSight(runtime, fromX, fromZ, toX, toZ, fromY = PLAY_EYE_HEIGHT, toY = PLAY_EYE_HEIGHT) {
+    if (runtime.voxelLayout) {
+      return hasVoxelDungeonLineOfSight(runtime.voxelLayout, fromX, fromY, fromZ, toX, toY, toZ);
+    }
+    return hasVoxelLineOfSight(runtime.walkableVoxels, runtime.solidScatterVoxels, fromX, fromZ, toX, toZ);
   }
 
   function canStandAt(runtime, fromX, fromZ, toX, toZ) {
@@ -1534,20 +2318,13 @@ export function createPlay3d(elements, callbacks) {
   }
 
   function enemyCanSeePlayer(runtime, enemy, distance) {
-    if (distance > runtime.playSettings.enemyVisionRange) return false;
+    if (distance > (enemy.visionRange || runtime.playSettings.enemyVisionRange)) return false;
     const toPlayerX = (runtime.player.x - enemy.x) / Math.max(distance, 0.0001);
     const toPlayerZ = (runtime.player.z - enemy.z) / Math.max(distance, 0.0001);
     const forwardX = -Math.sin(enemy.yaw);
     const forwardZ = -Math.cos(enemy.yaw);
     if (forwardX * toPlayerX + forwardZ * toPlayerZ < ENEMY_VISION_DOT) return false;
-    return hasVoxelLineOfSight(
-      runtime.walkableVoxels,
-      runtime.solidScatterVoxels,
-      enemy.x,
-      enemy.z,
-      runtime.player.x,
-      runtime.player.z
-    );
+    return runtimeLineOfSight(runtime, enemy.x, enemy.z, runtime.player.x, runtime.player.z, 1.12, PLAY_EYE_HEIGHT);
   }
 
   function findEnemyPath(runtime, enemy) {
@@ -1590,7 +2367,7 @@ export function createPlay3d(elements, callbacks) {
     const distance = Math.hypot(dx, dz);
     if (distance < 0.08) return;
 
-    const step = Math.min(distance, ENEMY_MOVE_SPEED * dt);
+    const step = Math.min(distance, (enemy.speed || ENEMY_MOVE_SPEED) * dt);
     const dirX = dx / distance;
     const dirZ = dz / distance;
     enemy.yaw = Math.atan2(-dirX, -dirZ);
@@ -1614,10 +2391,11 @@ export function createPlay3d(elements, callbacks) {
     const distance = Math.hypot(dx, dz) || 1;
     const startY = 1.12;
     const targetY = PLAY_EYE_HEIGHT - 0.18;
+    const projectileSpeed = enemy.projectileSpeed || ENEMY_PROJECTILE_SPEED;
     const velocity = {
-      x: (dx / distance) * ENEMY_PROJECTILE_SPEED,
-      y: ((targetY - startY) / Math.max(distance / ENEMY_PROJECTILE_SPEED, 0.2)) * 0.22,
-      z: (dz / distance) * ENEMY_PROJECTILE_SPEED
+      x: (dx / distance) * projectileSpeed,
+      y: ((targetY - startY) / Math.max(distance / projectileSpeed, 0.2)) * 0.22,
+      z: (dz / distance) * projectileSpeed
     };
     const mesh = createProjectileMesh(runtime.THREE);
     mesh.position.set(enemy.x, startY, enemy.z);
@@ -1629,6 +2407,7 @@ export function createPlay3d(elements, callbacks) {
       vx: velocity.x,
       vy: velocity.y,
       vz: velocity.z,
+      damage: enemy.damage || ENEMY_PROJECTILE_DAMAGE,
       life: ENEMY_PROJECTILE_LIFE,
       mesh
     });
@@ -1651,10 +2430,13 @@ export function createPlay3d(elements, callbacks) {
       projectile.z += projectile.vz * dt;
 
       const key = voxelKey(Math.floor(projectile.x), Math.floor(projectile.z));
-      const hitWall = projectile.life <= 0 || projectile.y < 0.25 || projectile.y > CAVE_MAX_HEIGHT || !runtime.walkableVoxels.has(key) || runtime.solidScatterVoxels.has(key);
+      const hitVoxelWall = runtime.voxelLayout
+        ? !hasVoxelDungeonAirAt(runtime.voxelLayout, projectile.x, projectile.y, projectile.z)
+        : !runtime.walkableVoxels.has(key);
+      const hitWall = projectile.life <= 0 || projectile.y < 0.25 || projectile.y > CAVE_MAX_HEIGHT || hitVoxelWall || runtime.solidScatterVoxels.has(key);
       const hitPlayer = !runtime.player.dead && Math.hypot(projectile.x - runtime.player.x, projectile.z - runtime.player.z) < 0.48 && Math.abs(projectile.y - PLAY_EYE_HEIGHT) < 1.0;
 
-      if (hitPlayer) damagePlayer(runtime, ENEMY_PROJECTILE_DAMAGE);
+      if (hitPlayer) damagePlayer(runtime, projectile.damage || ENEMY_PROJECTILE_DAMAGE);
       if (hitWall || hitPlayer) {
         removeProjectile(runtime, projectile);
         continue;
@@ -1684,22 +2466,23 @@ export function createPlay3d(elements, callbacks) {
     enemy.mesh.position.set(enemy.x, bob, enemy.z);
     enemy.mesh.rotation.y = enemy.yaw;
     const hitScale = enemy.hitTimer > 0 ? 1.08 : 1;
-    enemy.mesh.scale.set(hitScale, hitScale, hitScale);
+    const baseScale = enemy.baseMeshScale || { x: 1, y: 1, z: 1 };
+    enemy.mesh.scale.set(baseScale.x * hitScale, baseScale.y * hitScale, baseScale.z * hitScale);
 
     if (enemy.bodyMaterial) {
       if (enemy.hitTimer > 0) {
         enemy.bodyMaterial.color.setHex(0x71322b);
       } else {
-        const idleColor = enemy.kind === 'caster' ? 0x202436 : 0x223027;
-        const alertColor = enemy.kind === 'caster' ? 0x34324a : 0x2f3d30;
+        const idleColor = enemy.idleBodyColor ?? (enemy.kind === 'caster' ? 0x202436 : 0x223027);
+        const alertColor = enemy.alertBodyColor ?? (enemy.kind === 'caster' ? 0x34324a : 0x2f3d30);
         enemy.bodyMaterial.color.setHex(enemy.state === 'alerted' ? alertColor : idleColor);
       }
     }
     if (enemy.eyeMaterial) {
       if (enemy.state === 'alerted') {
-        enemy.eyeMaterial.color.setHex(enemy.aggroFlash > 0 ? 0x9a5d2d : 0x4a1710);
+        enemy.eyeMaterial.color.setHex(enemy.aggroFlash > 0 ? (enemy.eyeFlashColor ?? 0x9a5d2d) : (enemy.eyeAlertColor ?? 0x4a1710));
       } else {
-        enemy.eyeMaterial.color.setHex(0x21180e);
+        enemy.eyeMaterial.color.setHex(enemy.eyeIdleColor ?? 0x21180e);
       }
     }
   }
@@ -1713,7 +2496,7 @@ export function createPlay3d(elements, callbacks) {
 
       const distanceToPlayer = Math.hypot(runtime.player.x - enemy.x, runtime.player.z - enemy.z);
       if (enemy.state === 'idle') {
-        if (distanceToPlayer <= runtime.playSettings.enemyAggroRange || enemyCanSeePlayer(runtime, enemy, distanceToPlayer)) {
+        if (distanceToPlayer <= (enemy.aggroRange || runtime.playSettings.enemyAggroRange) || enemyCanSeePlayer(runtime, enemy, distanceToPlayer)) {
           setEnemyAlerted(enemy);
         }
       }
@@ -1721,16 +2504,9 @@ export function createPlay3d(elements, callbacks) {
       if (enemy.state === 'alerted') {
         enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
         enemy.pathTimer -= dt;
-        const directLine = hasVoxelLineOfSight(
-          runtime.walkableVoxels,
-          runtime.solidScatterVoxels,
-          enemy.x,
-          enemy.z,
-          runtime.player.x,
-          runtime.player.z
-        );
-        const casterReady = enemy.kind === 'caster' && directLine && distanceToPlayer <= ENEMY_CAST_RANGE && distanceToPlayer >= ENEMY_CAST_MIN_RANGE;
-        const meleeReady = distanceToPlayer <= ENEMY_MELEE_RANGE;
+        const directLine = runtimeLineOfSight(runtime, enemy.x, enemy.z, runtime.player.x, runtime.player.z, 1.12, PLAY_EYE_HEIGHT);
+        const casterReady = enemy.kind === 'caster' && directLine && distanceToPlayer <= enemy.range && distanceToPlayer >= (enemy.minRange || ENEMY_CAST_MIN_RANGE);
+        const meleeReady = distanceToPlayer <= enemy.range;
 
         let targetX = runtime.player.x;
         let targetZ = runtime.player.z;
@@ -1754,13 +2530,13 @@ export function createPlay3d(elements, callbacks) {
           faceEnemyTowardPlayer(runtime, enemy);
           if (enemy.attackCooldown <= 0 && !runtime.player.dead) {
             spawnEnemyProjectile(runtime, enemy);
-            enemy.attackCooldown = ENEMY_CAST_COOLDOWN;
+            enemy.attackCooldown = enemy.attackCooldownDuration;
           }
         } else if (meleeReady) {
           faceEnemyTowardPlayer(runtime, enemy);
           if (enemy.attackCooldown <= 0 && !runtime.player.dead) {
-            damagePlayer(runtime, ENEMY_MELEE_DAMAGE);
-            enemy.attackCooldown = ENEMY_MELEE_COOLDOWN;
+            damagePlayer(runtime, enemy.damage || ENEMY_MELEE_DAMAGE);
+            enemy.attackCooldown = enemy.attackCooldownDuration;
           }
         } else if (distanceToPlayer > 0.85) {
           moveEnemyToward(runtime, enemy, targetX, targetZ, dt);
@@ -1799,9 +2575,9 @@ export function createPlay3d(elements, callbacks) {
     }
   }
 
-  function damageEnemy(enemy) {
+  function damageEnemy(runtime, enemy) {
     if (enemy.health <= 0) return;
-    enemy.health -= PLAYER_ATTACK_DAMAGE;
+    enemy.health -= runtime.playSettings.player.attackDamage;
     enemy.hitTimer = 0.16;
     setEnemyAlerted(enemy);
     if (enemy.health <= 0) {
@@ -1812,7 +2588,8 @@ export function createPlay3d(elements, callbacks) {
 
   function performPlayerAttack(runtime) {
     if (!runtime || runtime.player.dead || runtime.attackCooldown > 0) return;
-    runtime.attackCooldown = PLAYER_ATTACK_COOLDOWN;
+    const playerSettings = runtime.playSettings.player;
+    runtime.attackCooldown = 1 / Math.max(0.1, playerSettings.attackSpeed);
     runtime.attackTimer = 0.14;
     if (runtime.swordSlash) runtime.swordSlash.visible = true;
 
@@ -1828,11 +2605,11 @@ export function createPlay3d(elements, callbacks) {
       const dy = 0.78 - origin.y;
       const dz = enemy.z - origin.z;
       const distance = Math.hypot(dx, dy, dz);
-      if (distance > PLAYER_ATTACK_RANGE) continue;
+      if (distance > playerSettings.attackRange) continue;
 
       const dot = (forward.x * dx + forward.y * dy + forward.z * dz) / Math.max(distance, 0.0001);
       if (dot < PLAYER_ATTACK_DOT) continue;
-      if (!hasVoxelLineOfSight(runtime.walkableVoxels, runtime.solidScatterVoxels, runtime.player.x, runtime.player.z, enemy.x, enemy.z)) continue;
+      if (!runtimeLineOfSight(runtime, runtime.player.x, runtime.player.z, enemy.x, enemy.z, PLAY_EYE_HEIGHT, 0.78)) continue;
 
       const score = dot * 2 - distance * 0.32;
       if (score > bestScore) {
@@ -1841,7 +2618,7 @@ export function createPlay3d(elements, callbacks) {
       }
     }
 
-    if (bestEnemy) damageEnemy(bestEnemy);
+    if (bestEnemy) damageEnemy(runtime, bestEnemy);
   }
 
   function drawPlayMinimap(runtime) {
@@ -1888,7 +2665,10 @@ export function createPlay3d(elements, callbacks) {
       const length = Math.hypot(moveX, moveZ) || 1;
       moveX /= length;
       moveZ /= length;
-      const speed = (playKeys.has('ShiftLeft') || playKeys.has('ShiftRight')) ? 7.2 : 4.4;
+      const playerSettings = runtime.playSettings.player;
+      const speed = (playKeys.has('ShiftLeft') || playKeys.has('ShiftRight'))
+        ? playerSettings.sprintSpeed
+        : playerSettings.moveSpeed;
       const yaw = runtime.player.yaw;
       const forwardX = -Math.sin(yaw);
       const forwardZ = -Math.cos(yaw);
@@ -1905,8 +2685,13 @@ export function createPlay3d(elements, callbacks) {
     updateProjectiles(runtime, dt);
     updateAttackEffects(runtime, dt);
     if (runtime.torchLight) {
-      const flicker = Math.sin(time * 0.018) * 0.22 + Math.sin(time * 0.041) * 0.12;
-      runtime.torchLight.intensity = 6.1 + flicker;
+      const playerSettings = runtime.playSettings.player;
+      const flicker = (
+        Math.sin(time * 0.018) * 0.65 +
+        Math.sin(time * 0.041) * 0.35
+      ) * playerSettings.lightFlicker;
+      runtime.torchLight.intensity = Math.max(0, playerSettings.lightIntensity + flicker);
+      runtime.torchLight.distance = playerSettings.lightRadius;
     }
     drawPlayMinimap(runtime);
     runtime.renderer.render(runtime.scene, runtime.camera);
@@ -1930,11 +2715,27 @@ export function createPlay3d(elements, callbacks) {
   }
 
   async function start() {
-    const maskMap = getMaskMap();
-    const validation = validateMaskMap(maskMap);
+    const voxelState = getVoxelDungeonState ? await getVoxelDungeonState() : null;
+    if (voxelState?.error) {
+      showToast(voxelState.error);
+      return;
+    }
+    const proceduralReady = !!voxelState?.layout && !voxelState.error;
+    const maskMap = proceduralReady ? voxelState.layout.maskMap : getMaskMap();
+    const validation = proceduralReady
+      ? {
+          valid: true,
+          cells: maskMap.size,
+          rooms: voxelState.layout.chambers,
+          deadEnds: voxelState.layout.deadEnds,
+          unmatched: [],
+          disconnected: [],
+          startKey: keyFor(0, 0)
+        }
+      : validateMaskMap(maskMap);
     setValidationResult(validation);
     if (!validation.valid) {
-      showToast(getPlacedSize() ? 'Fix invalid sections before Play' : 'Generate or place a dungeon first');
+      showToast(getPlacedSize() ? 'Fix invalid sections before Play' : 'Generate a procedural cave first');
       return;
     }
 
@@ -1944,7 +2745,7 @@ export function createPlay3d(elements, callbacks) {
       playOverlay.setAttribute('aria-hidden', 'false');
       playActive = true;
       playKeys.clear();
-      buildPlayScene(runtime, maskMap, validation);
+      await buildPlayScene(runtime, maskMap, validation, proceduralReady ? voxelState : null);
       resizePlayRenderer();
       updateLockState();
       drawPlayMinimap(runtime);

@@ -32,8 +32,8 @@ import {
   resetEngineData,
   saveEngineData
 } from './core/engine-data.js?v=engine-ui-4';
-import { createPlay3d } from './play/play3d.js?v=engine-ui-4';
-import { createVoxelizerTool } from './tools/voxelizer.js?v=engine-ui-4';
+import { createPlay3d } from './play/play3d.js?v=organic-cave-2';
+import { createVoxelizerTool } from './tools/voxelizer.js?v=organic-cave-2';
 
 const canvas = document.getElementById('mapCanvas');
 const viewportWrap = document.querySelector('.viewport-wrap');
@@ -52,6 +52,7 @@ const rotateRightBtn = document.getElementById('rotateRight');
 const clearMapBtn = document.getElementById('clearMap');
 const centerViewBtn = document.getElementById('centerView');
 const play3dBtn = document.getElementById('play3d');
+const voxelPlay3dBtn = document.getElementById('voxelPlay3d');
 const toast = document.getElementById('toast');
 const hint = document.querySelector('.hint');
 const genSeedInput = document.getElementById('genSeed');
@@ -159,7 +160,7 @@ const TOOL_PAGE_META = {
   settings: ['Dungeon Settings', 'Spawn composition'],
   player: ['Player Properties', 'Movement, combat, and torch tuning'],
   entities: ['Entity Catalog', 'Author enemies, mines, props, and treasure'],
-  voxelizer: ['Voxel Tool', 'Box carving preview']
+  voxelizer: ['Voxel Tool', 'Procedural cave generator']
 };
 
 function placedToMaskMap() {
@@ -1086,6 +1087,8 @@ function setActiveToolPage(button) {
   if (page === 'voxelizer') voxelizerTool.activate();
 }
 
+let voxelizerTool = null;
+
 const play3d = createPlay3d(
   {
     playOverlay,
@@ -1101,12 +1104,13 @@ const play3d = createPlay3d(
     getPlacedSize: () => placed.size,
     getScatterSeed: () => activeScatterSeed,
     getPlaySettings: readPlaySettings,
+    getVoxelDungeonState: () => voxelizerTool?.getPlayState?.(),
     setValidationResult,
     showToast
   }
 );
 
-const voxelizerTool = createVoxelizerTool(
+voxelizerTool = createVoxelizerTool(
   document.getElementById('pageVoxelizer'),
   { showToast }
 );
@@ -1297,6 +1301,7 @@ toolRailButtons.forEach(button => {
 setActiveToolPage(document.querySelector('.tool-rail-btn.active[data-tool-page]') || toolRailButtons[0]);
 
 play3dBtn.addEventListener('click', play3d.start);
+voxelPlay3dBtn?.addEventListener('click', play3d.start);
 lockPlayBtn.addEventListener('click', play3d.requestPointerLock);
 exitPlayBtn.addEventListener('click', play3d.stop);
 playCanvas.addEventListener('click', play3d.requestPointerLock);

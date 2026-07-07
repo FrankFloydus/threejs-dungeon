@@ -36,6 +36,11 @@ function drawArms(context, x, y, size, dirs, color, lineWidth, cap = 'butt') {
   context.restore();
 }
 
+function fillSquare(context, cx, cy, size, color) {
+  context.fillStyle = color;
+  context.fillRect(cx - size / 2, cy - size / 2, size, size);
+}
+
 function drawMinimapArms(context, x, y, size, dirs, color, lineWidth) {
   const cx = x + size / 2;
   const cy = y + size / 2;
@@ -102,31 +107,22 @@ export function drawPieceShape(context, x, y, size, pieceId, rot = 0, options = 
   context.save();
   context.globalAlpha = alpha;
 
-  if (icon || selected || ghost) {
+  if (icon) {
     const pad = icon ? size * 0.05 : size * 0.13;
     roundRect(context, x + pad, y + pad, size - pad * 2, size - pad * 2, size * 0.07);
-    context.fillStyle = ghost ? 'rgba(148, 201, 115, .10)' : (selected ? 'rgba(148, 201, 115, .13)' : 'rgba(38, 39, 42, .56)');
+    context.fillStyle = selected ? 'rgba(148, 201, 115, .13)' : 'rgba(38, 39, 42, .56)';
     context.fill();
     context.lineWidth = Math.max(1, size * 0.018);
-    context.strokeStyle = ghost ? 'rgba(148, 201, 115, .45)' : 'rgba(231, 231, 228, .12)';
+    context.strokeStyle = 'rgba(231, 231, 228, .12)';
     context.stroke();
   }
 
   if (piece.room) {
     drawArms(context, x, y, size, dirs, ghost ? '#d7e7c2' : '#a5a9ad', corridor * 0.78, 'butt');
-
-    const inner = size * 0.50;
-    roundRect(context, cx - inner / 2, cy - inner / 2, inner, inner, size * 0.075);
-    context.fillStyle = ghost ? '#d7e7c2' : '#b1b5b8';
-    context.fill();
-    context.strokeStyle = ghost ? 'rgba(215, 231, 194, .85)' : 'rgba(231, 231, 228, .28)';
-    context.lineWidth = Math.max(1, size * 0.022);
-    context.stroke();
+    fillSquare(context, cx, cy, size * 0.50, ghost ? '#d7e7c2' : '#b1b5b8');
   } else {
     drawArms(context, x, y, size, dirs, ghost ? '#d7e7c2' : '#a5a9ad', corridor, 'butt');
-    context.fillStyle = ghost ? '#d7e7c2' : '#a5a9ad';
-    roundRect(context, cx - corridor / 2, cy - corridor / 2, corridor, corridor, size * 0.04);
-    context.fill();
+    fillSquare(context, cx, cy, corridor, ghost ? '#d7e7c2' : '#a5a9ad');
 
     context.strokeStyle = ghost ? 'rgba(215, 231, 194, .85)' : 'rgba(231, 231, 228, .22)';
     context.lineWidth = Math.max(1, size * 0.018);
