@@ -34,6 +34,18 @@
     </header>
 
     <div class="workspace">
+      <nav class="tool-rail" aria-label="Engine tools">
+        <button class="tool-rail-btn active" type="button" title="Dungeon Creator" aria-label="Dungeon Creator">
+          <span class="tool-icon">DC</span>
+        </button>
+        <button class="tool-rail-btn" type="button" title="Dungeon Settings" aria-label="Dungeon Settings">
+          <span class="tool-icon">DS</span>
+        </button>
+        <button class="tool-rail-btn" type="button" title="Enemy Settings" aria-label="Enemy Settings">
+          <span class="tool-icon">ES</span>
+        </button>
+      </nav>
+
       <main class="viewport-wrap">
       <canvas id="mapCanvas"></canvas>
       <div class="hint">
@@ -43,61 +55,147 @@
       </main>
 
       <aside class="generation-panel" aria-label="Dungeon generation controls">
-        <h2>Dungeon Generator</h2>
-        <p class="subtle">Rooms + tunnels</p>
+        <div class="panel-header">
+          <div>
+            <h2>Dungeon Generator</h2>
+            <p class="subtle">Rooms, tunnels, population</p>
+          </div>
+          <span class="panel-badge">Tool</span>
+        </div>
 
         <div class="generator-form">
-          <div class="field">
-            <label for="genSeed">Seed</label>
-            <input id="genSeed" type="text" value="dungeon-001" autocomplete="off" spellcheck="false" />
-          </div>
-
-          <label class="check-field" for="genAutoSeed">
-            <input id="genAutoSeed" type="checkbox" />
-            Auto seed on generate
-          </label>
-
-          <div class="field">
-            <label for="genTargetCells">Target cells</label>
-            <input id="genTargetCells" type="number" min="8" max="180" step="1" value="48" />
-          </div>
-
-          <div class="field">
-            <label for="genMainLength">Main path length</label>
-            <input id="genMainLength" type="number" min="3" max="120" step="1" value="20" />
-          </div>
-
-          <div class="field">
-            <label for="genBranchCount">Branches</label>
-            <input id="genBranchCount" type="number" min="0" max="40" step="1" value="8" />
-          </div>
-
-          <div class="field">
-            <label for="genBranchLength">Branch length</label>
-            <input id="genBranchLength" type="number" min="1" max="24" step="1" value="5" />
-          </div>
-
-          <div class="field">
-            <div class="field-row">
-              <label for="genLoopChance">Loop chance</label>
-              <output id="genLoopChanceValue" for="genLoopChance">14%</output>
+          <section class="engine-section" aria-labelledby="seedSectionTitle">
+            <div class="section-heading">
+              <h3 id="seedSectionTitle">Dungeon Creator</h3>
+              <span>Seed</span>
             </div>
-            <input id="genLoopChance" type="range" min="0" max="70" step="1" value="14" />
-          </div>
 
-          <div class="field">
-            <div class="field-row">
-              <label for="genRoomChance">Room chance</label>
-              <output id="genRoomChanceValue" for="genRoomChance">35%</output>
+            <div class="field">
+              <label for="genSeed">Seed</label>
+              <input id="genSeed" type="text" value="dungeon-001" autocomplete="off" spellcheck="false" />
             </div>
-            <input id="genRoomChance" type="range" min="0" max="100" step="1" value="35" />
-          </div>
 
-          <div class="button-grid">
-            <button id="generateDungeon" class="generator-btn primary wide" type="button">Generate</button>
-            <button id="randomSeed" class="generator-btn" type="button">Random Seed</button>
-            <button id="validateMap" class="generator-btn" type="button">Validate Map</button>
-          </div>
+            <label class="check-field" for="genAutoSeed">
+              <input id="genAutoSeed" type="checkbox" />
+              Auto seed on generate
+            </label>
+          </section>
+
+          <section class="engine-section" aria-labelledby="layoutSectionTitle">
+            <div class="section-heading">
+              <h3 id="layoutSectionTitle">Dungeon Settings</h3>
+              <span>Layout</span>
+            </div>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="genTargetCells">Target cells</label>
+                <input id="genTargetCells" type="number" min="8" max="180" step="1" value="48" />
+              </div>
+
+              <div class="field">
+                <label for="genMainLength">Main path</label>
+                <input id="genMainLength" type="number" min="3" max="120" step="1" value="20" />
+              </div>
+
+              <div class="field">
+                <label for="genBranchCount">Branches</label>
+                <input id="genBranchCount" type="number" min="0" max="40" step="1" value="8" />
+              </div>
+
+              <div class="field">
+                <label for="genBranchLength">Branch length</label>
+                <input id="genBranchLength" type="number" min="1" max="24" step="1" value="5" />
+              </div>
+            </div>
+
+            <div class="field">
+              <div class="field-row">
+                <label for="genLoopChance">Loop chance</label>
+                <output id="genLoopChanceValue" for="genLoopChance">14%</output>
+              </div>
+              <input id="genLoopChance" type="range" min="0" max="70" step="1" value="14" />
+            </div>
+
+            <div class="field">
+              <div class="field-row">
+                <label for="genRoomChance">Room chance</label>
+                <output id="genRoomChanceValue" for="genRoomChance">35%</output>
+              </div>
+              <input id="genRoomChance" type="range" min="0" max="100" step="1" value="35" />
+            </div>
+          </section>
+
+          <section class="engine-section" aria-labelledby="propsSectionTitle">
+            <div class="section-heading">
+              <h3 id="propsSectionTitle">Content Settings</h3>
+              <span>Future</span>
+            </div>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="chestCount">Chests</label>
+                <input id="chestCount" type="number" min="0" max="12" step="1" value="2" />
+              </div>
+
+              <div class="field">
+                <label for="oreDensity">Ore density</label>
+                <input id="oreDensity" type="number" min="0" max="100" step="1" value="18" />
+              </div>
+
+              <div class="field">
+                <label for="clutterDensity">Clutter density</label>
+                <input id="clutterDensity" type="number" min="0" max="100" step="1" value="28" />
+              </div>
+            </div>
+          </section>
+
+          <section class="engine-section" aria-labelledby="enemySectionTitle">
+            <div class="section-heading">
+              <h3 id="enemySectionTitle">Enemy Settings</h3>
+              <span>AI</span>
+            </div>
+
+            <div class="field-grid">
+              <div class="field">
+                <label for="enemyCount">Enemies</label>
+                <input id="enemyCount" type="number" min="0" max="24" step="1" value="5" />
+              </div>
+
+              <div class="field">
+                <label for="enemyMeleeChance">Melee %</label>
+                <input id="enemyMeleeChance" type="number" min="0" max="100" step="1" value="65" />
+              </div>
+
+              <div class="field">
+                <label for="enemyCasterChance">Caster %</label>
+                <input id="enemyCasterChance" type="number" min="0" max="100" step="1" value="20" />
+              </div>
+
+              <div class="field">
+                <label for="enemyAggroRange">Aggro range</label>
+                <input id="enemyAggroRange" type="number" min="1" max="60" step="1" value="16" />
+              </div>
+
+              <div class="field">
+                <label for="enemyVisionRange">Vision range</label>
+                <input id="enemyVisionRange" type="number" min="1" max="80" step="1" value="24" />
+              </div>
+            </div>
+          </section>
+
+          <section class="engine-section actions-section" aria-labelledby="actionsSectionTitle">
+            <div class="section-heading">
+              <h3 id="actionsSectionTitle">Build Actions</h3>
+              <span>Run</span>
+            </div>
+
+            <div class="button-grid">
+              <button id="generateDungeon" class="generator-btn primary wide" type="button">Generate</button>
+              <button id="randomSeed" class="generator-btn" type="button">Random Seed</button>
+              <button id="validateMap" class="generator-btn" type="button">Validate Map</button>
+            </div>
+          </section>
         </div>
 
         <div id="validationSummary" class="validation-box">No validation run yet.</div>
@@ -108,6 +206,15 @@
       <canvas id="playCanvas" class="play-canvas" tabindex="0"></canvas>
       <div class="play-reticle" aria-hidden="true"></div>
       <canvas id="minimapCanvas" class="play-minimap" width="184" height="184" aria-label="Dungeon minimap"></canvas>
+      <div id="playerHealthHud" class="player-health-hud" aria-label="Player health">
+        <div class="player-health-meta">
+          <span>HP</span>
+          <span id="playerHealthText">100 / 100</span>
+        </div>
+        <div class="player-health-track">
+          <div id="playerHealthFill" class="player-health-fill"></div>
+        </div>
+      </div>
       <div class="play-hud">
         <div id="playStatus" class="play-status">3D Dungeon</div>
         <div class="play-actions">

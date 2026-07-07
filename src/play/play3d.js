@@ -32,10 +32,30 @@ const ENEMY_VISION_DOT = Math.cos(Math.PI * 0.36);
 const ENEMY_PATH_REFRESH = 0.38;
 const ENEMY_MOVE_SPEED = 2.05;
 const ENEMY_SPAWN_DISTANCE = 18;
+const ENEMY_MELEE_RANGE = 1.12;
+const ENEMY_MELEE_COOLDOWN = 1.15;
+const ENEMY_MELEE_DAMAGE = 10;
+const ENEMY_CAST_MIN_RANGE = 3.2;
+const ENEMY_CAST_RANGE = 10.5;
+const ENEMY_CAST_COOLDOWN = 2.1;
+const ENEMY_PROJECTILE_SPEED = 5.4;
+const ENEMY_PROJECTILE_LIFE = 3.2;
+const ENEMY_PROJECTILE_DAMAGE = 12;
 const PLAYER_ATTACK_RANGE = 2.05;
 const PLAYER_ATTACK_DOT = Math.cos(Math.PI * 0.17);
 const PLAYER_ATTACK_COOLDOWN = 0.42;
 const PLAYER_ATTACK_DAMAGE = 1;
+const PLAYER_MAX_HEALTH = 100;
+const DEFAULT_PLAY_SETTINGS = {
+  enemyCount: null,
+  chestCount: null,
+  oreDensity: 1,
+  clutterDensity: 1,
+  enemyMeleeChance: 62,
+  enemyCasterChance: 38,
+  enemyAggroRange: ENEMY_AGGRO_RANGE,
+  enemyVisionRange: ENEMY_VISION_RANGE
+};
 const PLAY_MOVE_CODES = new Set([
   'KeyW',
   'KeyA',
@@ -208,6 +228,21 @@ function createCaveLayout(maskMap) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizePlaySettings(settings = {}) {
+  const enemyCount = Number(settings.enemyCount);
+  const chestCount = Number(settings.chestCount);
+  return {
+    enemyCount: Number.isFinite(enemyCount) ? clamp(Math.round(enemyCount), 0, 24) : DEFAULT_PLAY_SETTINGS.enemyCount,
+    chestCount: Number.isFinite(chestCount) ? clamp(Math.round(chestCount), 0, 12) : DEFAULT_PLAY_SETTINGS.chestCount,
+    oreDensity: clamp(Number(settings.oreDensity) || DEFAULT_PLAY_SETTINGS.oreDensity, 0, 3),
+    clutterDensity: clamp(Number(settings.clutterDensity) || DEFAULT_PLAY_SETTINGS.clutterDensity, 0, 3),
+    enemyMeleeChance: clamp(Number(settings.enemyMeleeChance) || DEFAULT_PLAY_SETTINGS.enemyMeleeChance, 0, 100),
+    enemyCasterChance: clamp(Number(settings.enemyCasterChance) || DEFAULT_PLAY_SETTINGS.enemyCasterChance, 0, 100),
+    enemyAggroRange: clamp(Number(settings.enemyAggroRange) || DEFAULT_PLAY_SETTINGS.enemyAggroRange, 1, 14),
+    enemyVisionRange: clamp(Number(settings.enemyVisionRange) || DEFAULT_PLAY_SETTINGS.enemyVisionRange, 2, 28)
+  };
 }
 
 function hashString(value) {
@@ -646,7 +681,7 @@ function addSolidScatterItem(items, item, caveLayout, maskMap, blockedVoxels, cr
   return true;
 }
 
-function generateScatterItems(maskMap, caveLayout, baseSeed) {
+function generateScatterItems(maskMap, caveLayout, baseSeed, playSettings = DEFAULT_PLAY_SETTINGS) {
   const seed = scatterSeedFor(maskMap, baseSeed);
   const floorCount = caveLayout.walkableVoxels.size;
   const startNode = maskMap.get(keyFor(0, 0)) || maskMap.values().next().value;
@@ -655,10 +690,13 @@ function generateScatterItems(maskMap, caveLayout, baseSeed) {
   const blockedVoxels = new Set();
   const criticalKeys = buildCriticalTraversalKeys(maskMap, caveLayout.walkableVoxels);
 
+  const defaultChestTarget = clamp(Math.round(floorCount / SCATTER_DENSITY.chestDivisor), floorCount > 900 ? 1 : 0, 4);
+  const oreTarget = playSettings.oreDensity <= 0 ? 0 : clamp(Math.round((floorCount / SCATTER_DENSITY.oreDivisor) * playSettings.oreDensity), 1, 20);
+  const clutterTarget = playSettings.clutterDensity <= 0 ? 0 : clamp(Math.round((floorCount / SCATTER_DENSITY.clutterDivisor) * playSettings.clutterDensity), 1, 34);
   const targets = {
-    ore: clamp(Math.round(floorCount / SCATTER_DENSITY.oreDivisor), 2, 12),
-    chest: clamp(Math.round(floorCount / SCATTER_DENSITY.chestDivisor), floorCount > 900 ? 1 : 0, 4),
-    clutter: clamp(Math.round(floorCount / SCATTER_DENSITY.clutterDivisor), 4, 22)
+    ore: oreTarget,
+    chest: playSettings.chestCount === null ? defaultChestTarget : playSettings.chestCount,
+    clutter: clutterTarget
   };
 
   const oreCandidates = sortScatterCandidates(buildOreCandidates(caveLayout, maskMap, seed, start), seed, 910);
@@ -703,11 +741,20 @@ function hasVoxelLineOfSight(walkableVoxels, blockedVoxels, fromX, fromZ, toX, t
   return true;
 }
 
-function generateEnemies(maskMap, caveLayout, blockedVoxels, baseSeed) {
+function enemyKindFor(seed, candidate, playSettings) {
+  const melee = Math.max(0, playSettings.enemyMeleeChance);
+  const caster = Math.max(0, playSettings.enemyCasterChance);
+  const total = melee + caster;
+  if (total <= 0) return 'melee';
+  return randomSeeded(seed, candidate.position.x, candidate.position.z, 1130) * total < caster ? 'caster' : 'melee';
+}
+
+function generateEnemies(maskMap, caveLayout, blockedVoxels, baseSeed, playSettings = DEFAULT_PLAY_SETTINGS) {
   const seed = hashString(`enemies|${baseSeed || 'manual'}|${mapSignature(maskMap)}`);
   const startNode = maskMap.get(keyFor(0, 0)) || maskMap.values().next().value;
   const start = { x: startNode.x * VOXELS_PER_TILE, z: startNode.y * VOXELS_PER_TILE };
-  const targetCount = clamp(Math.round(caveLayout.walkableVoxels.size / 850), 2, 7);
+  const defaultTargetCount = clamp(Math.round(caveLayout.walkableVoxels.size / 850), 2, 7);
+  const targetCount = playSettings.enemyCount === null ? defaultTargetCount : playSettings.enemyCount;
   const candidates = [];
 
   for (const key of caveLayout.walkableVoxels) {
@@ -739,16 +786,20 @@ function generateEnemies(maskMap, caveLayout, blockedVoxels, baseSeed) {
   for (const candidate of candidates) {
     if (enemies.length >= targetCount) break;
     if (enemies.some(enemy => Math.hypot(enemy.x - candidate.position.x, enemy.z - candidate.position.z) < 10)) continue;
+    const kind = enemyKindFor(seed, candidate, playSettings);
+    const maxHealth = kind === 'caster' ? 2 : 3;
     enemies.push({
       id: `enemy-${enemies.length + 1}-${hashString(candidate.key).toString(36)}`,
+      kind,
       x: candidate.position.x,
       z: candidate.position.z,
       yaw: candidate.yaw,
       state: 'idle',
-      health: 2,
-      maxHealth: 2,
+      health: maxHealth,
+      maxHealth,
       path: [],
       pathTimer: randomSeeded(seed, candidate.position.x, candidate.position.z, 1120) * ENEMY_PATH_REFRESH,
+      attackCooldown: randomSeeded(seed, candidate.position.x, candidate.position.z, 1140) * (kind === 'caster' ? ENEMY_CAST_COOLDOWN : ENEMY_MELEE_COOLDOWN),
       hitTimer: 0,
       aggroFlash: 0,
       mesh: null,
@@ -1130,33 +1181,37 @@ function createScatterGroup(THREE, scatter) {
 function createEnemyMesh(THREE, enemy) {
   const group = new THREE.Group();
   group.name = enemy.id;
+  const caster = enemy.kind === 'caster';
 
   const bodyMaterial = new THREE.MeshLambertMaterial({
-    color: 0x223027,
-    emissive: 0x020504,
-    emissiveIntensity: 0.08,
+    color: caster ? 0x202436 : 0x223027,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
     fog: true
   });
   const headMaterial = new THREE.MeshLambertMaterial({
-    color: 0x19231d,
-    emissive: 0x010302,
-    emissiveIntensity: 0.08,
+    color: caster ? 0x191b2a : 0x19231d,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
     fog: true
   });
-  const eyeMaterial = new THREE.MeshBasicMaterial({
-    color: 0x5a3a16
+  const eyeMaterial = new THREE.MeshLambertMaterial({
+    color: 0x21180e,
+    fog: true
   });
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.92, 0.5), bodyMaterial);
   body.position.y = 0.56;
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.42), headMaterial);
   head.position.set(0, 1.18, -0.03);
-  const leftEye = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, 0.035), eyeMaterial);
+  const leftEye = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.05, 0.03), eyeMaterial);
   leftEye.position.set(-0.12, 1.2, -0.255);
-  const rightEye = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, 0.035), eyeMaterial);
+  const rightEye = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.05, 0.03), eyeMaterial);
   rightEye.position.set(0.12, 1.2, -0.255);
+  const crown = new THREE.Mesh(new THREE.BoxGeometry(caster ? 0.36 : 0.26, 0.08, 0.28), headMaterial);
+  crown.position.set(0, 1.44, 0);
 
-  for (const mesh of [body, head, leftEye, rightEye]) {
+  for (const mesh of [body, head, leftEye, rightEye, crown]) {
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     group.add(mesh);
@@ -1191,18 +1246,34 @@ function createSwordSlash(THREE) {
   return blade;
 }
 
+function createProjectileMesh(THREE) {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x6d7cff,
+    transparent: true,
+    opacity: 0.72,
+    fog: true
+  });
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), material);
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  return mesh;
+}
+
 export function createPlay3d(elements, callbacks) {
   const {
     playOverlay,
     playCanvas,
     minimapCanvas,
     lockPlayBtn,
+    playerHealthFill,
+    playerHealthText,
     playStatus
   } = elements;
   const {
     getMaskMap,
     getPlacedSize,
     getScatterSeed,
+    getPlaySettings,
     setValidationResult,
     showToast
   } = callbacks;
@@ -1245,8 +1316,9 @@ export function createPlay3d(elements, callbacks) {
       minimapScene: new THREE.Scene(),
       camera: new THREE.PerspectiveCamera(74, 1, 0.05, 500),
       minimapCamera: new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 500),
-      player: { x: 0, z: 0, yaw: 0, pitch: 0 },
+      player: { x: 0, z: 0, yaw: 0, pitch: 0, health: PLAYER_MAX_HEALTH, maxHealth: PLAYER_MAX_HEALTH, invulnTimer: 0, dead: false },
       map: null,
+      playSettings: normalizePlaySettings(),
       walkableVoxels: null,
       torchLight: null,
       playerMarker: null,
@@ -1256,6 +1328,8 @@ export function createPlay3d(elements, callbacks) {
       solidScatterVoxels: new Set(),
       enemies: [],
       enemyGroup: null,
+      projectiles: [],
+      projectileGroup: null,
       swordSlash: null,
       attackCooldown: 0,
       attackTimer: 0,
@@ -1287,10 +1361,43 @@ export function createPlay3d(elements, callbacks) {
     runtime.solidScatterVoxels.clear();
     runtime.enemies = [];
     runtime.enemyGroup = null;
+    runtime.projectiles = [];
+    runtime.projectileGroup = null;
     runtime.swordSlash = null;
     runtime.attackCooldown = 0;
     runtime.attackTimer = 0;
+    runtime.player.health = PLAYER_MAX_HEALTH;
+    runtime.player.maxHealth = PLAYER_MAX_HEALTH;
+    runtime.player.invulnTimer = 0;
+    runtime.player.dead = false;
     runtime.discoveredVoxels.clear();
+    updatePlayerHealthHud(runtime);
+  }
+
+  function updatePlayerHealthHud(runtime) {
+    if (!runtime?.player) return;
+    const maxHealth = Math.max(1, runtime.player.maxHealth || PLAYER_MAX_HEALTH);
+    const health = clamp(runtime.player.health, 0, maxHealth);
+    const pct = health / maxHealth;
+    if (playerHealthFill) {
+      playerHealthFill.style.width = `${Math.round(pct * 100)}%`;
+      playerHealthFill.classList.toggle('critical', pct <= 0.28);
+    }
+    if (playerHealthText) {
+      playerHealthText.textContent = `${Math.ceil(health)} / ${maxHealth}`;
+    }
+  }
+
+  function damagePlayer(runtime, amount) {
+    if (!runtime || runtime.player.dead || runtime.player.invulnTimer > 0) return;
+    runtime.player.health = Math.max(0, runtime.player.health - amount);
+    runtime.player.invulnTimer = 0.38;
+    updatePlayerHealthHud(runtime);
+    if (runtime.player.health <= 0) {
+      runtime.player.dead = true;
+      playStatus.textContent = `${playSceneLabel} - player down, Escape exits`;
+      showToast('You died');
+    }
   }
 
   function resizePlayRenderer() {
@@ -1318,13 +1425,14 @@ export function createPlay3d(elements, callbacks) {
     const { THREE } = runtime;
     disposePlayScene(runtime);
     runtime.map = maskMap;
+    runtime.playSettings = normalizePlaySettings(getPlaySettings ? getPlaySettings() : {});
     runtime.scene.background = new THREE.Color(0x020202);
     runtime.scene.fog = new THREE.Fog(0x020202, 9, 34);
 
     const caveLayout = createCaveLayout(maskMap);
     const terrain = buildVoxelCaveMesh(THREE, caveLayout);
-    const scatter = generateScatterItems(maskMap, caveLayout, getScatterSeed ? getScatterSeed() : 'manual');
-    const enemySet = generateEnemies(maskMap, caveLayout, scatter.blockedVoxels, getScatterSeed ? getScatterSeed() : 'manual');
+    const scatter = generateScatterItems(maskMap, caveLayout, getScatterSeed ? getScatterSeed() : 'manual', runtime.playSettings);
+    const enemySet = generateEnemies(maskMap, caveLayout, scatter.blockedVoxels, getScatterSeed ? getScatterSeed() : 'manual', runtime.playSettings);
     runtime.walkableVoxels = caveLayout.walkableVoxels;
     runtime.scatterItems = scatter.items;
     runtime.solidScatterVoxels = scatter.blockedVoxels;
@@ -1334,6 +1442,10 @@ export function createPlay3d(elements, callbacks) {
     runtime.scene.add(runtime.scatterGroup);
     runtime.enemyGroup = createEnemyGroup(THREE, enemySet.enemies);
     runtime.scene.add(runtime.enemyGroup);
+    runtime.projectiles = [];
+    runtime.projectileGroup = new THREE.Group();
+    runtime.projectileGroup.name = 'enemy-projectiles';
+    runtime.scene.add(runtime.projectileGroup);
 
     runtime.minimapScene.background = new THREE.Color(0x000000);
     runtime.minimapData = buildMinimapMesh(THREE, caveLayout);
@@ -1358,8 +1470,12 @@ export function createPlay3d(elements, callbacks) {
     runtime.player.z = start.y * PLAY_TILE_SIZE;
     runtime.player.yaw = yawForDir(firstOpenDir(start.mask));
     runtime.player.pitch = 0;
+    runtime.player.health = runtime.player.maxHealth;
+    runtime.player.invulnTimer = 0;
+    runtime.player.dead = false;
     runtime.camera.rotation.order = 'YXZ';
     updatePlayCamera(runtime);
+    updatePlayerHealthHud(runtime);
     revealMinimapArea(runtime);
     playSceneLabel = `Voxel Cave - ${validation.cells} cells, ${terrain.faceCount} faces, ${scatter.items.length} props, ${enemySet.enemies.length} enemies`;
     playStatus.textContent = playSceneLabel;
@@ -1418,7 +1534,7 @@ export function createPlay3d(elements, callbacks) {
   }
 
   function enemyCanSeePlayer(runtime, enemy, distance) {
-    if (distance > ENEMY_VISION_RANGE) return false;
+    if (distance > runtime.playSettings.enemyVisionRange) return false;
     const toPlayerX = (runtime.player.x - enemy.x) / Math.max(distance, 0.0001);
     const toPlayerZ = (runtime.player.z - enemy.z) / Math.max(distance, 0.0001);
     const forwardX = -Math.sin(enemy.yaw);
@@ -1485,6 +1601,75 @@ export function createPlay3d(elements, callbacks) {
     if (canEnemyStandAt(runtime, enemy.x, nextZ)) enemy.z = nextZ;
   }
 
+  function faceEnemyTowardPlayer(runtime, enemy) {
+    const dx = runtime.player.x - enemy.x;
+    const dz = runtime.player.z - enemy.z;
+    if (Math.hypot(dx, dz) > 0.001) enemy.yaw = Math.atan2(-dx, -dz);
+  }
+
+  function spawnEnemyProjectile(runtime, enemy) {
+    if (!runtime.projectileGroup) return;
+    const dx = runtime.player.x - enemy.x;
+    const dz = runtime.player.z - enemy.z;
+    const distance = Math.hypot(dx, dz) || 1;
+    const startY = 1.12;
+    const targetY = PLAY_EYE_HEIGHT - 0.18;
+    const velocity = {
+      x: (dx / distance) * ENEMY_PROJECTILE_SPEED,
+      y: ((targetY - startY) / Math.max(distance / ENEMY_PROJECTILE_SPEED, 0.2)) * 0.22,
+      z: (dz / distance) * ENEMY_PROJECTILE_SPEED
+    };
+    const mesh = createProjectileMesh(runtime.THREE);
+    mesh.position.set(enemy.x, startY, enemy.z);
+    runtime.projectileGroup.add(mesh);
+    runtime.projectiles.push({
+      x: enemy.x,
+      y: startY,
+      z: enemy.z,
+      vx: velocity.x,
+      vy: velocity.y,
+      vz: velocity.z,
+      life: ENEMY_PROJECTILE_LIFE,
+      mesh
+    });
+  }
+
+  function removeProjectile(runtime, projectile) {
+    if (projectile.mesh) {
+      runtime.projectileGroup?.remove(projectile.mesh);
+      projectile.mesh.geometry?.dispose();
+      projectile.mesh.material?.dispose();
+    }
+  }
+
+  function updateProjectiles(runtime, dt) {
+    const remaining = [];
+    for (const projectile of runtime.projectiles) {
+      projectile.life -= dt;
+      projectile.x += projectile.vx * dt;
+      projectile.y += projectile.vy * dt;
+      projectile.z += projectile.vz * dt;
+
+      const key = voxelKey(Math.floor(projectile.x), Math.floor(projectile.z));
+      const hitWall = projectile.life <= 0 || projectile.y < 0.25 || projectile.y > CAVE_MAX_HEIGHT || !runtime.walkableVoxels.has(key) || runtime.solidScatterVoxels.has(key);
+      const hitPlayer = !runtime.player.dead && Math.hypot(projectile.x - runtime.player.x, projectile.z - runtime.player.z) < 0.48 && Math.abs(projectile.y - PLAY_EYE_HEIGHT) < 1.0;
+
+      if (hitPlayer) damagePlayer(runtime, ENEMY_PROJECTILE_DAMAGE);
+      if (hitWall || hitPlayer) {
+        removeProjectile(runtime, projectile);
+        continue;
+      }
+
+      if (projectile.mesh) {
+        projectile.mesh.position.set(projectile.x, projectile.y, projectile.z);
+        projectile.mesh.rotation.y += dt * 5;
+        projectile.mesh.rotation.x += dt * 3.5;
+      }
+      remaining.push(projectile);
+    }
+    runtime.projectiles = remaining;
+  }
+
   function updateEnemyMesh(enemy, time, dt) {
     if (!enemy.mesh) return;
     if (enemy.health <= 0) {
@@ -1505,14 +1690,16 @@ export function createPlay3d(elements, callbacks) {
       if (enemy.hitTimer > 0) {
         enemy.bodyMaterial.color.setHex(0x71322b);
       } else {
-        enemy.bodyMaterial.color.setHex(enemy.state === 'alerted' ? 0x2f3d30 : 0x223027);
+        const idleColor = enemy.kind === 'caster' ? 0x202436 : 0x223027;
+        const alertColor = enemy.kind === 'caster' ? 0x34324a : 0x2f3d30;
+        enemy.bodyMaterial.color.setHex(enemy.state === 'alerted' ? alertColor : idleColor);
       }
     }
     if (enemy.eyeMaterial) {
       if (enemy.state === 'alerted') {
-        enemy.eyeMaterial.color.setHex(enemy.aggroFlash > 0 ? 0xffb13b : 0xff3b1f);
+        enemy.eyeMaterial.color.setHex(enemy.aggroFlash > 0 ? 0x9a5d2d : 0x4a1710);
       } else {
-        enemy.eyeMaterial.color.setHex(0x5a3a16);
+        enemy.eyeMaterial.color.setHex(0x21180e);
       }
     }
   }
@@ -1526,12 +1713,13 @@ export function createPlay3d(elements, callbacks) {
 
       const distanceToPlayer = Math.hypot(runtime.player.x - enemy.x, runtime.player.z - enemy.z);
       if (enemy.state === 'idle') {
-        if (distanceToPlayer <= ENEMY_AGGRO_RANGE || enemyCanSeePlayer(runtime, enemy, distanceToPlayer)) {
+        if (distanceToPlayer <= runtime.playSettings.enemyAggroRange || enemyCanSeePlayer(runtime, enemy, distanceToPlayer)) {
           setEnemyAlerted(enemy);
         }
       }
 
       if (enemy.state === 'alerted') {
+        enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
         enemy.pathTimer -= dt;
         const directLine = hasVoxelLineOfSight(
           runtime.walkableVoxels,
@@ -1541,6 +1729,8 @@ export function createPlay3d(elements, callbacks) {
           runtime.player.x,
           runtime.player.z
         );
+        const casterReady = enemy.kind === 'caster' && directLine && distanceToPlayer <= ENEMY_CAST_RANGE && distanceToPlayer >= ENEMY_CAST_MIN_RANGE;
+        const meleeReady = distanceToPlayer <= ENEMY_MELEE_RANGE;
 
         let targetX = runtime.player.x;
         let targetZ = runtime.player.z;
@@ -1560,7 +1750,21 @@ export function createPlay3d(elements, callbacks) {
           enemy.pathTimer = ENEMY_PATH_REFRESH;
         }
 
-        if (distanceToPlayer > 0.85) moveEnemyToward(runtime, enemy, targetX, targetZ, dt);
+        if (casterReady) {
+          faceEnemyTowardPlayer(runtime, enemy);
+          if (enemy.attackCooldown <= 0 && !runtime.player.dead) {
+            spawnEnemyProjectile(runtime, enemy);
+            enemy.attackCooldown = ENEMY_CAST_COOLDOWN;
+          }
+        } else if (meleeReady) {
+          faceEnemyTowardPlayer(runtime, enemy);
+          if (enemy.attackCooldown <= 0 && !runtime.player.dead) {
+            damagePlayer(runtime, ENEMY_MELEE_DAMAGE);
+            enemy.attackCooldown = ENEMY_MELEE_COOLDOWN;
+          }
+        } else if (distanceToPlayer > 0.85) {
+          moveEnemyToward(runtime, enemy, targetX, targetZ, dt);
+        }
       }
 
       updateEnemyMesh(enemy, time, dt);
@@ -1568,6 +1772,7 @@ export function createPlay3d(elements, callbacks) {
   }
 
   function movePlayPlayer(runtime, dx, dz) {
+    if (runtime.player.dead) return;
     const player = runtime.player;
     const nextX = player.x + dx;
     if (canStandAt(runtime, player.x, player.z, nextX, player.z)) player.x = nextX;
@@ -1583,6 +1788,7 @@ export function createPlay3d(elements, callbacks) {
   }
 
   function updateAttackEffects(runtime, dt) {
+    runtime.player.invulnTimer = Math.max(0, runtime.player.invulnTimer - dt);
     runtime.attackCooldown = Math.max(0, runtime.attackCooldown - dt);
     runtime.attackTimer = Math.max(0, runtime.attackTimer - dt);
     if (!runtime.swordSlash) return;
@@ -1605,7 +1811,7 @@ export function createPlay3d(elements, callbacks) {
   }
 
   function performPlayerAttack(runtime) {
-    if (!runtime || runtime.attackCooldown > 0) return;
+    if (!runtime || runtime.player.dead || runtime.attackCooldown > 0) return;
     runtime.attackCooldown = PLAYER_ATTACK_COOLDOWN;
     runtime.attackTimer = 0.14;
     if (runtime.swordSlash) runtime.swordSlash.visible = true;
@@ -1678,7 +1884,7 @@ export function createPlay3d(elements, callbacks) {
     if (playKeys.has('KeyA') || playKeys.has('ArrowLeft')) moveX -= 1;
     if (playKeys.has('KeyD') || playKeys.has('ArrowRight')) moveX += 1;
 
-    if (moveX || moveZ) {
+    if ((moveX || moveZ) && !runtime.player.dead) {
       const length = Math.hypot(moveX, moveZ) || 1;
       moveX /= length;
       moveZ /= length;
@@ -1696,6 +1902,7 @@ export function createPlay3d(elements, callbacks) {
     updatePlayCamera(runtime);
     revealMinimapArea(runtime);
     updateEnemies(runtime, dt, time);
+    updateProjectiles(runtime, dt);
     updateAttackEffects(runtime, dt);
     if (runtime.torchLight) {
       const flicker = Math.sin(time * 0.018) * 0.22 + Math.sin(time * 0.041) * 0.12;

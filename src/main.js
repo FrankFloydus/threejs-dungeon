@@ -52,7 +52,17 @@ const playCanvas = document.getElementById('playCanvas');
 const minimapCanvas = document.getElementById('minimapCanvas');
 const lockPlayBtn = document.getElementById('lockPlay');
 const exitPlayBtn = document.getElementById('exitPlay');
+const playerHealthFill = document.getElementById('playerHealthFill');
+const playerHealthText = document.getElementById('playerHealthText');
 const playStatus = document.getElementById('playStatus');
+const enemyCountInput = document.getElementById('enemyCount');
+const chestCountInput = document.getElementById('chestCount');
+const oreDensityInput = document.getElementById('oreDensity');
+const clutterDensityInput = document.getElementById('clutterDensity');
+const enemyMeleeChanceInput = document.getElementById('enemyMeleeChance');
+const enemyCasterChanceInput = document.getElementById('enemyCasterChance');
+const enemyAggroRangeInput = document.getElementById('enemyAggroRange');
+const enemyVisionRangeInput = document.getElementById('enemyVisionRange');
 
 let width = 0;
 let height = 0;
@@ -125,7 +135,7 @@ function cellToScreen(x, y) {
 
 function drawGrid() {
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#08111f';
+  ctx.fillStyle = '#141518';
   ctx.fillRect(0, 0, width, height);
 
   const left = Math.floor((-camera.x) / cellSize) - 1;
@@ -135,7 +145,7 @@ function drawGrid() {
 
   ctx.save();
   ctx.lineWidth = 1;
-  ctx.strokeStyle = 'rgba(71, 85, 105, .36)';
+  ctx.strokeStyle = 'rgba(84, 86, 92, .28)';
   ctx.beginPath();
   for (let gx = left; gx <= right; gx++) {
     const sx = Math.round(camera.x + gx * cellSize) + 0.5;
@@ -149,7 +159,7 @@ function drawGrid() {
   }
   ctx.stroke();
 
-  ctx.strokeStyle = 'rgba(125, 211, 252, .28)';
+  ctx.strokeStyle = 'rgba(148, 201, 115, .22)';
   ctx.lineWidth = 2;
   ctx.beginPath();
   const originX = Math.round(camera.x) + 0.5;
@@ -175,7 +185,7 @@ function drawHover() {
   if (!hoverCell) return;
   const pos = cellToScreen(hoverCell.x, hoverCell.y);
   ctx.save();
-  ctx.fillStyle = 'rgba(125, 211, 252, .08)';
+  ctx.fillStyle = 'rgba(148, 201, 115, .055)';
   ctx.fillRect(pos.x, pos.y, cellSize, cellSize);
   drawPieceShape(ctx, pos.x, pos.y, cellSize, currentPiece, rotation, { alpha: 0.72, ghost: true });
   ctx.restore();
@@ -281,6 +291,24 @@ function readGenerationSettings() {
   };
 }
 
+function readOptionalNumberInput(input, min, max, fallback) {
+  if (!input) return fallback;
+  return readNumberInput(input, min, max, fallback);
+}
+
+function readPlaySettings() {
+  return {
+    enemyCount: readOptionalNumberInput(enemyCountInput, 0, 24, 5),
+    chestCount: readOptionalNumberInput(chestCountInput, 0, 12, 2),
+    oreDensity: readOptionalNumberInput(oreDensityInput, 0, 100, 18) / 18,
+    clutterDensity: readOptionalNumberInput(clutterDensityInput, 0, 100, 28) / 28,
+    enemyMeleeChance: readOptionalNumberInput(enemyMeleeChanceInput, 0, 100, 65),
+    enemyCasterChance: readOptionalNumberInput(enemyCasterChanceInput, 0, 100, 20),
+    enemyAggroRange: readOptionalNumberInput(enemyAggroRangeInput, 1, 60, 16),
+    enemyVisionRange: readOptionalNumberInput(enemyVisionRangeInput, 1, 80, 24)
+  };
+}
+
 function setValidationResult(result) {
   validationSummary.textContent = formatValidationResult(result);
   validationSummary.classList.toggle('valid', !!result && result.valid);
@@ -341,12 +369,15 @@ const play3d = createPlay3d(
     playCanvas,
     minimapCanvas,
     lockPlayBtn,
+    playerHealthFill,
+    playerHealthText,
     playStatus
   },
   {
     getMaskMap: placedToMaskMap,
     getPlacedSize: () => placed.size,
     getScatterSeed: () => activeScatterSeed,
+    getPlaySettings: readPlaySettings,
     setValidationResult,
     showToast
   }

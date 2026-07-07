@@ -95,50 +95,40 @@ export function drawPieceShape(context, x, y, size, pieceId, rot = 0, options = 
   const selected = !!options.selected;
   const icon = !!options.icon;
   const dirs = rotatedDirs(piece, piece.room ? 0 : rot);
-  const pad = icon ? size * 0.06 : size * 0.08;
-  const tileRadius = size * 0.11;
   const corridor = size * 0.34;
-  const wall = corridor + size * 0.12;
   const cx = x + size / 2;
   const cy = y + size / 2;
 
   context.save();
   context.globalAlpha = alpha;
 
-  roundRect(context, x + pad, y + pad, size - pad * 2, size - pad * 2, tileRadius);
-  context.fillStyle = ghost ? 'rgba(125, 211, 252, .14)' : (selected ? 'rgba(56, 189, 248, .16)' : 'rgba(30, 41, 59, .88)');
-  context.fill();
-  context.lineWidth = Math.max(1, size * 0.025);
-  context.strokeStyle = ghost ? 'rgba(125, 211, 252, .65)' : 'rgba(148, 163, 184, .18)';
-  context.stroke();
+  if (icon || selected || ghost) {
+    const pad = icon ? size * 0.05 : size * 0.13;
+    roundRect(context, x + pad, y + pad, size - pad * 2, size - pad * 2, size * 0.07);
+    context.fillStyle = ghost ? 'rgba(148, 201, 115, .10)' : (selected ? 'rgba(148, 201, 115, .13)' : 'rgba(38, 39, 42, .56)');
+    context.fill();
+    context.lineWidth = Math.max(1, size * 0.018);
+    context.strokeStyle = ghost ? 'rgba(148, 201, 115, .45)' : 'rgba(231, 231, 228, .12)';
+    context.stroke();
+  }
 
   if (piece.room) {
-    drawArms(context, x, y, size, dirs, ghost ? '#164e63' : '#070b15', wall, 'butt');
-    drawArms(context, x, y, size, dirs, ghost ? '#7dd3fc' : '#9ca3af', corridor * 0.78, 'butt');
+    drawArms(context, x, y, size, dirs, ghost ? '#d7e7c2' : '#a5a9ad', corridor * 0.78, 'butt');
 
-    const outer = size * 0.62;
     const inner = size * 0.50;
-    roundRect(context, cx - outer / 2, cy - outer / 2, outer, outer, size * 0.09);
-    context.fillStyle = ghost ? '#164e63' : '#070b15';
-    context.fill();
     roundRect(context, cx - inner / 2, cy - inner / 2, inner, inner, size * 0.075);
-    context.fillStyle = ghost ? '#7dd3fc' : '#a8b0bb';
+    context.fillStyle = ghost ? '#d7e7c2' : '#b1b5b8';
     context.fill();
-    context.strokeStyle = ghost ? 'rgba(224, 242, 254, .85)' : 'rgba(226, 232, 240, .32)';
+    context.strokeStyle = ghost ? 'rgba(215, 231, 194, .85)' : 'rgba(231, 231, 228, .28)';
     context.lineWidth = Math.max(1, size * 0.022);
     context.stroke();
   } else {
-    drawArms(context, x, y, size, dirs, ghost ? '#164e63' : '#070b15', wall, 'butt');
-    context.fillStyle = ghost ? '#164e63' : '#070b15';
-    roundRect(context, cx - wall / 2, cy - wall / 2, wall, wall, size * 0.05);
-    context.fill();
-
-    drawArms(context, x, y, size, dirs, ghost ? '#7dd3fc' : '#9ca3af', corridor, 'butt');
-    context.fillStyle = ghost ? '#7dd3fc' : '#9ca3af';
+    drawArms(context, x, y, size, dirs, ghost ? '#d7e7c2' : '#a5a9ad', corridor, 'butt');
+    context.fillStyle = ghost ? '#d7e7c2' : '#a5a9ad';
     roundRect(context, cx - corridor / 2, cy - corridor / 2, corridor, corridor, size * 0.04);
     context.fill();
 
-    context.strokeStyle = ghost ? 'rgba(224, 242, 254, .85)' : 'rgba(226, 232, 240, .28)';
+    context.strokeStyle = ghost ? 'rgba(215, 231, 194, .85)' : 'rgba(231, 231, 228, .22)';
     context.lineWidth = Math.max(1, size * 0.018);
     context.beginPath();
     for (const dir of dirs) {
@@ -151,7 +141,7 @@ export function drawPieceShape(context, x, y, size, pieceId, rot = 0, options = 
 
   if (ghost) {
     context.setLineDash([Math.max(4, size * 0.08), Math.max(4, size * 0.06)]);
-    context.strokeStyle = 'rgba(186, 230, 253, .85)';
+    context.strokeStyle = 'rgba(215, 231, 194, .7)';
     context.lineWidth = Math.max(1, size * 0.028);
     context.strokeRect(x + 2, y + 2, size - 4, size - 4);
   }
