@@ -321,7 +321,6 @@ void Renderer::ensureShadowTargets(const LightSettings& light) {
 
 ImTextureID Renderer::renderViewport(const Camera& camera, const LightSettings& light, glm::uvec2 size) {
   ensureViewportTarget(size);
-  ensureShadowTargets(light);
 
   bgfx::setViewName(kSceneView, "Cave Preview");
   bgfx::setViewFrameBuffer(kSceneView, viewportFramebuffer_);
@@ -439,6 +438,7 @@ void Renderer::renderImGui(ImDrawData* drawData) {
 
       const std::uint16_t texIdx = static_cast<std::uint16_t>(cmd.GetTexID());
       bgfx::TextureHandle texture {texIdx};
+      const std::uint32_t verticesRemaining = vertexCount - static_cast<std::uint32_t>(cmd.VtxOffset);
       bgfx::setScissor(
         static_cast<std::uint16_t>(std::max(0.0f, clipRect.x)),
         static_cast<std::uint16_t>(std::max(0.0f, clipRect.y)),
@@ -446,7 +446,7 @@ void Renderer::renderImGui(ImDrawData* drawData) {
         static_cast<std::uint16_t>(std::min(static_cast<float>(fbHeight), clipRect.w) - std::max(0.0f, clipRect.y))
       );
       bgfx::setTexture(0, imguiTextureUniform_, texture);
-      bgfx::setVertexBuffer(0, &tvb, cmd.VtxOffset, vertexCount);
+      bgfx::setVertexBuffer(0, &tvb, cmd.VtxOffset, verticesRemaining);
       bgfx::setIndexBuffer(&tib, cmd.IdxOffset, cmd.ElemCount);
       bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_MSAA |
         BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_INV_SRC_ALPHA));

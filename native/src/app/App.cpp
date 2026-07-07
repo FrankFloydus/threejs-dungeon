@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 
 #include <SDL3_image/SDL_image.h>
 #include <imgui_impl_sdl3.h>
@@ -48,7 +49,7 @@ App::~App() {
 
 int App::run() {
   if (!initialize()) return 1;
-  requestGenerate();
+  if (SDL_getenv("DUNGEON_NATIVE_GENERATE_ON_START")) requestGenerate();
   while (running_) {
     pollEvents();
     frame();
@@ -80,10 +81,15 @@ bool App::initialize() {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.IniFilename = nullptr;
   ImGui::StyleColorsDark();
   ImGui_ImplSDL3_InitForOther(window_);
 
-  if (!renderer_.initialize(window_, width, height, "shaders")) {
+  const char* basePath = SDL_GetBasePath();
+  const std::filesystem::path shaderPath = basePath
+    ? std::filesystem::path(basePath) / "shaders"
+    : std::filesystem::path("shaders");
+  if (!renderer_.initialize(window_, width, height, shaderPath)) {
     status_ = "Failed to initialize BGFX Vulkan renderer or shader binaries.";
     std::fprintf(stderr, "%s\n", status_.c_str());
     return false;
@@ -291,14 +297,19 @@ void App::drawSettingsPanel() {
   tooltip("Rotate generated face UVs.");
 
   ImGui::SeparatorText("Lighting");
+  lightSettings_.shadows = false;
+  ImGui::BeginDisabled();
   ImGui::Checkbox("Point shadows", &lightSettings_.shadows);
-  tooltip("Allocate shadow targets for the player/preview point light.");
+  tooltip("Disabled until the BGFX point-shadow pass is implemented.");
+  ImGui::EndDisabled();
   ImGui::Checkbox("Back-face culling", &lightSettings_.culling);
   tooltip("Cull inward-facing cave faces. Leave off when inspecting the cave from inside.");
+  ImGui::BeginDisabled();
   ImGui::SliderInt("Shadow size", &lightSettings_.shadowSize, 512, 2048);
   tooltip("Shadow map resolution.");
   ImGui::SliderFloat("Shadow distance", &lightSettings_.shadowDistance, 12.0f, 96.0f, "%.1f");
   tooltip("Maximum point-light shadow distance.");
+  ImGui::EndDisabled();
   ImGui::SliderFloat("Light radius", &lightSettings_.radius, 8.0f, 96.0f, "%.1f");
   tooltip("Point light attenuation radius.");
 
@@ -314,7 +325,7 @@ void App::drawSettingsPanel() {
     }
   }
   if (changed) {
-    generationQueued_ = true;
+    requestGenerate();
   }
   ImGui::End();
 }

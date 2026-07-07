@@ -11,6 +11,7 @@ Native C++ prototype for the procedural voxel cave tool. It is separate from the
 - Exposed-face voxel meshing with meshoptimizer vertex/index optimization.
 - Texture loading for PNG, JPG, and WebP block textures.
 - Preview orbit/pan/zoom and basic flat-floor Play Mode collision through the 3D voxel field.
+- Idle startup: the app opens to the viewport and waits for `Generate` instead of generating immediately.
 
 ## Dependencies
 
@@ -53,4 +54,6 @@ For a Visual Studio generator, use a separate build directory and pass `--config
 
 ## Notes
 
-The native generator is chunked and volumetric so it can scale toward smaller voxel sizes such as `0.25`. Large levels at `0.25` are still flagged experimental in v1 because generation, meshing, upload, and shadow work need profiling before raising the target confidently.
+The native generator is chunked and volumetric so it can scale toward smaller voxel sizes such as `0.25`. Large levels at `0.25` are still flagged experimental in v1 because generation, meshing, and upload work need profiling before raising the target confidently.
+
+Point-light shading is active. Point-light shadows are intentionally disabled in the UI until the BGFX shadow pass is completed.

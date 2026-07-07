@@ -35,7 +35,7 @@ struct LightSettings {
   glm::vec3 position {0.0f, 2.2f, 0.0f};
   glm::vec3 color {1.0f, 0.82f, 0.58f};
   float radius = 32.0f;
-  bool shadows = true;
+  bool shadows = false;
   bool culling = false;
   int shadowSize = 1024;
   float shadowDistance = 42.0f;
