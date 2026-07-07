@@ -532,6 +532,9 @@ exitPlayBtn.addEventListener('click', play3d.stop);
 playCanvas.addEventListener('click', play3d.requestPointerLock);
 document.addEventListener('pointerlockchange', play3d.updateLockState);
 document.addEventListener('mousemove', play3d.handlePointerMove);
+document.addEventListener('mousedown', event => {
+  play3d.handlePointerDown(event);
+});
 
 genLoopChanceInput.addEventListener('input', syncChanceOutputs);
 genRoomChanceInput.addEventListener('input', syncChanceOutputs);
