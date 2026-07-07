@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dungeon Tunnel Modular Map Prototype</title>
+  <title>Dungeon Engine Editor</title>
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="./src/styles.css" />
 </head>
@@ -12,7 +12,7 @@
     <header class="toolbar">
       <div class="brand">
         <h1>Dungeon Tunnels</h1>
-        <p>modular 2D map prototype</p>
+        <p>engine editor prototype</p>
       </div>
 
       <div id="pieceStrip" class="piece-strip" aria-label="Dungeon pieces"></div>
@@ -34,172 +34,683 @@
     </header>
 
     <div class="workspace">
-      <nav class="tool-rail" aria-label="Engine tools">
-        <button class="tool-rail-btn active" type="button" title="Dungeon Creator" aria-label="Dungeon Creator">
+      <nav class="tool-rail" aria-label="Engine pages">
+        <button class="tool-rail-btn active" type="button" title="Dungeon Creator" aria-label="Dungeon Creator" data-tool-page="creator">
           <span class="tool-icon">DC</span>
         </button>
-        <button class="tool-rail-btn" type="button" title="Dungeon Settings" aria-label="Dungeon Settings">
+        <button class="tool-rail-btn" type="button" title="Dungeon Settings" aria-label="Dungeon Settings" data-tool-page="settings">
           <span class="tool-icon">DS</span>
         </button>
-        <button class="tool-rail-btn" type="button" title="Enemy Settings" aria-label="Enemy Settings">
-          <span class="tool-icon">ES</span>
+        <button class="tool-rail-btn" type="button" title="Player Properties" aria-label="Player Properties" data-tool-page="player">
+          <span class="tool-icon">PP</span>
+        </button>
+        <button class="tool-rail-btn" type="button" title="Entity Catalog" aria-label="Entity Catalog" data-tool-page="entities">
+          <span class="tool-icon">EC</span>
+        </button>
+        <button class="tool-rail-btn" type="button" title="Voxel Tool" aria-label="Voxel Tool" data-tool-page="voxelizer">
+          <span class="tool-icon">VT</span>
         </button>
       </nav>
 
-      <main class="viewport-wrap">
-      <canvas id="mapCanvas"></canvas>
-      <div class="hint">
-        Select a piece, then click the grid to place it. Hover shows a preview. Use <span class="kbd">Left</span>/<span class="kbd">Right</span> to rotate 90 deg. Right-click or <span class="kbd">Delete</span> erases. Hold <span class="kbd">Space</span> and drag to pan; mouse wheel zooms.
-      </div>
-      <div id="toast" class="toast"></div>
-      </main>
+      <main class="workspace-pages">
+        <section id="pageCreator" class="app-page workspace-page tool-page active" data-engine-page="creator" data-tool-page="creator" aria-labelledby="creatorPageTitle">
+          <div id="creatorPanel" class="creator-panel">
+            <section class="viewport-wrap" aria-label="Dungeon map canvas">
+              <canvas id="mapCanvas"></canvas>
+              <div class="hint">
+                Select a piece, then click the grid to place it. Hover shows a preview. Use <span class="kbd">Left</span>/<span class="kbd">Right</span> to rotate 90 deg. Right-click or <span class="kbd">Delete</span> erases. Hold <span class="kbd">Space</span> and drag to pan; mouse wheel zooms.
+              </div>
+              <div id="toast" class="toast"></div>
+            </section>
 
-      <aside class="generation-panel" aria-label="Dungeon generation controls">
-        <div class="panel-header">
-          <div>
-            <h2>Dungeon Generator</h2>
-            <p class="subtle">Rooms, tunnels, population</p>
+            <aside class="generation-panel creator-properties" aria-label="Dungeon generation controls">
+              <div class="panel-header">
+                <div>
+                  <h2 id="creatorPageTitle">Dungeon Creator</h2>
+                  <p class="subtle">Seed, shape, validation</p>
+                </div>
+                <span class="panel-badge">Map</span>
+              </div>
+
+              <div class="generator-form">
+                <section class="engine-section" aria-labelledby="seedSectionTitle">
+                  <div class="section-heading">
+                    <h3 id="seedSectionTitle">Seed</h3>
+                    <span>Input</span>
+                  </div>
+
+                  <div class="field">
+                    <label for="genSeed">Seed</label>
+                    <input id="genSeed" type="text" value="dungeon-001" autocomplete="off" spellcheck="false" />
+                  </div>
+
+                  <label class="check-field" for="genAutoSeed">
+                    <input id="genAutoSeed" type="checkbox" />
+                    Auto seed on generate
+                  </label>
+                </section>
+
+                <section class="engine-section" aria-labelledby="generatorShapeTitle">
+                  <div class="section-heading">
+                    <h3 id="generatorShapeTitle">Generator Properties</h3>
+                    <span>Shape</span>
+                  </div>
+
+                  <div class="field-grid">
+                    <div class="field">
+                      <label for="genTargetCells">Target cells</label>
+                      <input id="genTargetCells" type="number" min="8" max="180" step="1" value="48" />
+                    </div>
+
+                    <div class="field">
+                      <label for="genMainLength">Main path</label>
+                      <input id="genMainLength" type="number" min="3" max="120" step="1" value="20" />
+                    </div>
+
+                    <div class="field">
+                      <label for="genBranchCount">Branches</label>
+                      <input id="genBranchCount" type="number" min="0" max="40" step="1" value="8" />
+                    </div>
+
+                    <div class="field">
+                      <label for="genBranchLength">Branch length</label>
+                      <input id="genBranchLength" type="number" min="1" max="24" step="1" value="5" />
+                    </div>
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="genLoopChance">Loop chance</label>
+                      <output id="genLoopChanceValue" for="genLoopChance">14%</output>
+                    </div>
+                    <input id="genLoopChance" type="range" min="0" max="70" step="1" value="14" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="genRoomChance">Room chance</label>
+                      <output id="genRoomChanceValue" for="genRoomChance">35%</output>
+                    </div>
+                    <input id="genRoomChance" type="range" min="0" max="100" step="1" value="35" />
+                  </div>
+                </section>
+
+                <section class="engine-section actions-section" aria-labelledby="actionsSectionTitle">
+                  <div class="section-heading">
+                    <h3 id="actionsSectionTitle">Build Actions</h3>
+                    <span>Run</span>
+                  </div>
+
+                  <div class="button-grid">
+                    <button id="generateDungeon" class="generator-btn primary wide" type="button">Generate</button>
+                    <button id="randomSeed" class="generator-btn" type="button">Random Seed</button>
+                    <button id="validateMap" class="generator-btn" type="button">Validate Map</button>
+                  </div>
+                </section>
+              </div>
+
+              <div id="validationSummary" class="validation-box">No validation run yet.</div>
+            </aside>
           </div>
-          <span class="panel-badge">Tool</span>
-        </div>
+        </section>
 
-        <div class="generator-form">
-          <section class="engine-section" aria-labelledby="seedSectionTitle">
-            <div class="section-heading">
-              <h3 id="seedSectionTitle">Dungeon Creator</h3>
-              <span>Seed</span>
-            </div>
+        <section id="pageSettings" class="app-page workspace-page tool-page" data-engine-page="settings" data-tool-page="settings" aria-labelledby="settingsPageTitle" hidden>
+          <div id="settingsPanel" class="settings-panel page-scroll">
+            <header class="page-header">
+              <div>
+                <h2 id="settingsPageTitle">Dungeon Settings</h2>
+                <p>Spawn composition</p>
+              </div>
+            </header>
 
-            <div class="field">
-              <label for="genSeed">Seed</label>
-              <input id="genSeed" type="text" value="dungeon-001" autocomplete="off" spellcheck="false" />
-            </div>
-
-            <label class="check-field" for="genAutoSeed">
-              <input id="genAutoSeed" type="checkbox" />
-              Auto seed on generate
-            </label>
-          </section>
-
-          <section class="engine-section" aria-labelledby="layoutSectionTitle">
-            <div class="section-heading">
-              <h3 id="layoutSectionTitle">Dungeon Settings</h3>
-              <span>Layout</span>
-            </div>
-
-            <div class="field-grid">
-              <div class="field">
-                <label for="genTargetCells">Target cells</label>
-                <input id="genTargetCells" type="number" min="8" max="180" step="1" value="48" />
+            <section class="workspace-section spawn-section" aria-labelledby="enemySpawnsTitle">
+              <div class="section-bar">
+                <div>
+                  <h3 id="enemySpawnsTitle">Enemy Spawns</h3>
+                  <p>Encounter budget and enemy weights</p>
+                </div>
+                <button id="addEnemySpawnRow" class="generator-btn section-action" type="button">Add Row</button>
               </div>
 
-              <div class="field">
-                <label for="genMainLength">Main path</label>
-                <input id="genMainLength" type="number" min="3" max="120" step="1" value="20" />
+              <div class="spawn-table" role="table" aria-label="Enemy spawn rows">
+                <div class="spawn-row spawn-row-head" role="row">
+                  <span role="columnheader">Entity</span>
+                  <span role="columnheader">Count</span>
+                  <span role="columnheader">Chance %</span>
+                  <span role="columnheader">Enabled</span>
+                  <span role="columnheader">Remove</span>
+                </div>
+                <div id="enemySpawnRows" class="spawn-rows" data-spawn-kind="enemy"></div>
+              </div>
+            </section>
+
+            <section class="workspace-section spawn-section" aria-labelledby="resourceSpawnsTitle">
+              <div class="section-bar">
+                <div>
+                  <h3 id="resourceSpawnsTitle">Entity/Resource Spawns</h3>
+                  <p>Interactables, ore, clutter, and pickups</p>
+                </div>
+                <button id="addEntitySpawnRow" class="generator-btn section-action" type="button">Add Row</button>
               </div>
 
-              <div class="field">
-                <label for="genBranchCount">Branches</label>
-                <input id="genBranchCount" type="number" min="0" max="40" step="1" value="8" />
+              <div class="spawn-table" role="table" aria-label="Entity and resource spawn rows">
+                <div class="spawn-row spawn-row-head" role="row">
+                  <span role="columnheader">Entity</span>
+                  <span role="columnheader">Count</span>
+                  <span role="columnheader">Chance %</span>
+                  <span role="columnheader">Enabled</span>
+                  <span role="columnheader">Remove</span>
+                </div>
+                <div id="entitySpawnRows" class="spawn-rows" data-spawn-kind="entity"></div>
+              </div>
+            </section>
+
+            <section class="workspace-section spawn-section" aria-labelledby="treasureSpawnsTitle">
+              <div class="section-bar">
+                <div>
+                  <h3 id="treasureSpawnsTitle">Treasure Spawns</h3>
+                  <p>Chest and reward placement</p>
+                </div>
+                <button id="addTreasureSpawnRow" class="generator-btn section-action" type="button">Add Row</button>
               </div>
 
-              <div class="field">
-                <label for="genBranchLength">Branch length</label>
-                <input id="genBranchLength" type="number" min="1" max="24" step="1" value="5" />
+              <div class="spawn-table" role="table" aria-label="Treasure spawn rows">
+                <div class="spawn-row spawn-row-head" role="row">
+                  <span role="columnheader">Entity</span>
+                  <span role="columnheader">Count</span>
+                  <span role="columnheader">Chance %</span>
+                  <span role="columnheader">Enabled</span>
+                  <span role="columnheader">Remove</span>
+                </div>
+                <div id="treasureSpawnRows" class="spawn-rows" data-spawn-kind="treasure"></div>
               </div>
-            </div>
+            </section>
+          </div>
+        </section>
 
-            <div class="field">
-              <div class="field-row">
-                <label for="genLoopChance">Loop chance</label>
-                <output id="genLoopChanceValue" for="genLoopChance">14%</output>
+        <section id="pagePlayer" class="app-page workspace-page tool-page" data-engine-page="player" data-tool-page="player" aria-labelledby="playerPageTitle" hidden>
+          <div id="playerPanel" class="page-scroll">
+            <header class="page-header">
+              <div>
+                <h2 id="playerPageTitle">Player Properties</h2>
+                <p>Movement, combat, and torch tuning</p>
               </div>
-              <input id="genLoopChance" type="range" min="0" max="70" step="1" value="14" />
-            </div>
+            </header>
 
-            <div class="field">
-              <div class="field-row">
-                <label for="genRoomChance">Room chance</label>
-                <output id="genRoomChanceValue" for="genRoomChance">35%</output>
-              </div>
-              <input id="genRoomChance" type="range" min="0" max="100" step="1" value="35" />
-            </div>
-          </section>
-
-          <section class="engine-section" aria-labelledby="propsSectionTitle">
-            <div class="section-heading">
-              <h3 id="propsSectionTitle">Content Settings</h3>
-              <span>Future</span>
-            </div>
-
-            <div class="field-grid">
-              <div class="field">
-                <label for="chestCount">Chests</label>
-                <input id="chestCount" type="number" min="0" max="12" step="1" value="2" />
+            <section class="workspace-section" aria-labelledby="playerMovementTitle">
+              <div class="section-bar">
+                <div>
+                  <h3 id="playerMovementTitle">Movement</h3>
+                  <p>Navigation speed while exploring caves</p>
+                </div>
               </div>
 
-              <div class="field">
-                <label for="oreDensity">Ore density</label>
-                <input id="oreDensity" type="number" min="0" max="100" step="1" value="18" />
+              <div class="field-grid property-grid">
+                <div class="field">
+                  <label for="playerMaxHealth">Max health</label>
+                  <input id="playerMaxHealth" type="number" min="1" max="500" step="1" value="100" />
+                </div>
+                <div class="field">
+                  <label for="playerMoveSpeed">Walk speed</label>
+                  <input id="playerMoveSpeed" type="number" min="0.5" max="20" step="0.1" value="4.4" />
+                </div>
+                <div class="field">
+                  <label for="playerSprintSpeed">Sprint speed</label>
+                  <input id="playerSprintSpeed" type="number" min="0.5" max="30" step="0.1" value="7.2" />
+                </div>
+              </div>
+            </section>
+
+            <section class="workspace-section" aria-labelledby="playerCombatTitle">
+              <div class="section-bar">
+                <div>
+                  <h3 id="playerCombatTitle">Combat</h3>
+                  <p>Sword damage, attack cadence, and hit reach</p>
+                </div>
               </div>
 
-              <div class="field">
-                <label for="clutterDensity">Clutter density</label>
-                <input id="clutterDensity" type="number" min="0" max="100" step="1" value="28" />
+              <div class="field-grid property-grid">
+                <div class="field">
+                  <label for="playerAttackDamage">Damage</label>
+                  <input id="playerAttackDamage" type="number" min="1" max="200" step="1" value="1" />
+                </div>
+                <div class="field">
+                  <label for="playerAttackSpeed">Attack speed</label>
+                  <input id="playerAttackSpeed" type="number" min="0.1" max="12" step="0.05" value="2.38" />
+                </div>
+                <div class="field">
+                  <label for="playerAttackRange">Attack range</label>
+                  <input id="playerAttackRange" type="number" min="0.4" max="10" step="0.05" value="2.05" />
+                </div>
               </div>
-            </div>
-          </section>
+            </section>
 
-          <section class="engine-section" aria-labelledby="enemySectionTitle">
-            <div class="section-heading">
-              <h3 id="enemySectionTitle">Enemy Settings</h3>
-              <span>AI</span>
-            </div>
-
-            <div class="field-grid">
-              <div class="field">
-                <label for="enemyCount">Enemies</label>
-                <input id="enemyCount" type="number" min="0" max="24" step="1" value="5" />
-              </div>
-
-              <div class="field">
-                <label for="enemyMeleeChance">Melee %</label>
-                <input id="enemyMeleeChance" type="number" min="0" max="100" step="1" value="65" />
-              </div>
-
-              <div class="field">
-                <label for="enemyCasterChance">Caster %</label>
-                <input id="enemyCasterChance" type="number" min="0" max="100" step="1" value="20" />
+            <section class="workspace-section" aria-labelledby="playerLightTitle">
+              <div class="section-bar">
+                <div>
+                  <h3 id="playerLightTitle">Torch</h3>
+                  <p>Player-held cave light</p>
+                </div>
               </div>
 
-              <div class="field">
-                <label for="enemyAggroRange">Aggro range</label>
-                <input id="enemyAggroRange" type="number" min="1" max="60" step="1" value="16" />
+              <div class="field-grid property-grid">
+                <div class="field">
+                  <label for="playerLightRadius">Light radius</label>
+                  <input id="playerLightRadius" type="number" min="1" max="80" step="0.1" value="16.5" />
+                </div>
+                <div class="field">
+                  <label for="playerLightIntensity">Light intensity</label>
+                  <input id="playerLightIntensity" type="number" min="0" max="30" step="0.1" value="6.2" />
+                </div>
+                <div class="field">
+                  <label for="playerLightFlicker">Flicker amount</label>
+                  <input id="playerLightFlicker" type="number" min="0" max="5" step="0.05" value="0.34" />
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="pageEntities" class="app-page workspace-page tool-page" data-engine-page="entities" data-tool-page="entities" aria-labelledby="entitiesPageTitle" hidden>
+          <div id="entitiesPanel" class="entities-panel">
+            <aside class="catalog-pane" aria-label="Entity list">
+              <header class="catalog-header">
+                <div>
+                  <h2 id="entitiesPageTitle">Entity Catalog</h2>
+                  <p>Actors, resources, rewards</p>
+                </div>
+              </header>
+
+              <div class="catalog-controls">
+                <div class="field search-field">
+                  <label for="entitySearch">Search</label>
+                  <input id="entitySearch" type="search" autocomplete="off" spellcheck="false" />
+                </div>
+                <button id="addEntityBtn" class="generator-btn primary" type="button">Add</button>
               </div>
 
-              <div class="field">
-                <label for="enemyVisionRange">Vision range</label>
-                <input id="enemyVisionRange" type="number" min="1" max="80" step="1" value="24" />
+              <div id="entityList" class="entity-list" aria-label="Catalog entries">
+                <button class="entity-list-item active" type="button" data-entity-id="melee-lurker">
+                  <span>Melee Lurker</span>
+                  <small>Enemy</small>
+                </button>
+                <button class="entity-list-item" type="button" data-entity-id="gloom-caster">
+                  <span>Gloom Caster</span>
+                  <small>Enemy</small>
+                </button>
+                <button class="entity-list-item" type="button" data-entity-id="ancient-chest">
+                  <span>Ancient Chest</span>
+                  <small>Treasure</small>
+                </button>
               </div>
-            </div>
-          </section>
+            </aside>
 
-          <section class="engine-section actions-section" aria-labelledby="actionsSectionTitle">
-            <div class="section-heading">
-              <h3 id="actionsSectionTitle">Build Actions</h3>
-              <span>Run</span>
-            </div>
+            <section class="inspector-pane" aria-label="Entity inspector">
+              <header class="inspector-header">
+                <div>
+                  <h2>Inspector</h2>
+                  <p>Selected entity data</p>
+                </div>
+                <div class="inspector-actions">
+                  <button id="duplicateEntityBtn" class="generator-btn" type="button">Duplicate</button>
+                  <button id="deleteEntityBtn" class="generator-btn danger" type="button">Delete</button>
+                  <button id="resetEngineDataBtn" class="generator-btn" type="button">Reset</button>
+                </div>
+              </header>
 
-            <div class="button-grid">
-              <button id="generateDungeon" class="generator-btn primary wide" type="button">Generate</button>
-              <button id="randomSeed" class="generator-btn" type="button">Random Seed</button>
-              <button id="validateMap" class="generator-btn" type="button">Validate Map</button>
-            </div>
-          </section>
-        </div>
+              <div class="inspector-grid">
+                <section class="workspace-section preview-section" aria-labelledby="entityPreviewTitle">
+                  <div class="section-bar">
+                    <h3 id="entityPreviewTitle">Model Preview</h3>
+                  </div>
+                  <canvas id="entityPreviewCanvas" class="entity-preview-canvas" width="420" height="260" aria-label="Entity model preview"></canvas>
+                </section>
 
-        <div id="validationSummary" class="validation-box">No validation run yet.</div>
-      </aside>
+                <section class="workspace-section core-section" aria-labelledby="entityCoreTitle">
+                  <div class="section-bar">
+                    <h3 id="entityCoreTitle">Core Fields</h3>
+                  </div>
+
+                  <div class="field-grid inspector-fields">
+                    <div class="field">
+                      <label for="entityName">Name</label>
+                      <input id="entityName" type="text" value="Melee Lurker" autocomplete="off" spellcheck="false" />
+                    </div>
+                    <div class="field">
+                      <label for="entityCategory">Category</label>
+                      <select id="entityCategory">
+                        <option value="enemy">Enemy</option>
+                        <option value="resource">Resource</option>
+                        <option value="treasure">Treasure</option>
+                        <option value="prop">Prop</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="entityModelKind">Model kind</label>
+                      <select id="entityModelKind">
+                        <option value="humanoid">Humanoid</option>
+                        <option value="caster">Caster</option>
+                        <option value="chest">Chest</option>
+                        <option value="crystal">Crystal</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="entityScale">Scale</label>
+                      <input id="entityScale" type="number" min="0.1" max="8" step="0.05" value="1" />
+                    </div>
+                    <div class="field">
+                      <label for="entityColor">Color</label>
+                      <input id="entityColor" type="color" value="#8f9a78" />
+                    </div>
+                    <div class="field">
+                      <label for="entityEmissive">Emissive</label>
+                      <input id="entityEmissive" type="color" value="#24261f" />
+                    </div>
+                  </div>
+                </section>
+
+                <section class="workspace-section combat-section" aria-labelledby="entityCombatTitle">
+                  <div class="section-bar">
+                    <h3 id="entityCombatTitle">Combat Fields</h3>
+                    <label class="check-field inline-check" for="entityCombatEnabled">
+                      <input id="entityCombatEnabled" type="checkbox" checked />
+                      Enabled
+                    </label>
+                  </div>
+
+                  <div id="entityCombatFields" class="field-grid inspector-fields">
+                    <div class="field">
+                      <label for="entityBehavior">Behavior</label>
+                      <select id="entityBehavior">
+                        <option value="melee">Melee</option>
+                        <option value="caster">Caster</option>
+                        <option value="passive">Passive</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="entityHealth">Health</label>
+                      <input id="entityHealth" type="number" min="1" max="200" step="1" value="3" />
+                    </div>
+                    <div class="field">
+                      <label for="entitySpeed">Speed</label>
+                      <input id="entitySpeed" type="number" min="0.25" max="8" step="0.05" value="2.25" />
+                    </div>
+                    <div class="field">
+                      <label for="entityAggroRange">Aggro range</label>
+                      <input id="entityAggroRange" type="number" min="1" max="60" step="1" value="16" />
+                    </div>
+                    <div class="field">
+                      <label for="entityVisionRange">Vision range</label>
+                      <input id="entityVisionRange" type="number" min="1" max="80" step="1" value="24" />
+                    </div>
+                    <div class="field">
+                      <label for="entityAttackRate">Attack rate</label>
+                      <input id="entityAttackRate" type="number" min="0.1" max="5" step="0.05" value="0.85" />
+                    </div>
+                    <div class="field">
+                      <label for="entityDamage">Damage</label>
+                      <input id="entityDamage" type="number" min="1" max="50" step="1" value="10" />
+                    </div>
+                    <div class="field">
+                      <label for="entityRange">Range</label>
+                      <input id="entityRange" type="number" min="0.4" max="24" step="0.05" value="1.12" />
+                    </div>
+                    <div class="field">
+                      <label for="entityProjectileSpeed">Projectile speed</label>
+                      <input id="entityProjectileSpeed" type="number" min="1" max="18" step="0.1" value="5.4" />
+                    </div>
+                  </div>
+                </section>
+
+                <section class="workspace-section rules-section" aria-labelledby="entityRulesTitle">
+                  <div class="section-bar">
+                    <h3 id="entityRulesTitle">Spawn Rule Builder</h3>
+                    <button id="addRuleBtn" class="generator-btn section-action" type="button">Add Rule</button>
+                  </div>
+
+                  <div id="entityRules" class="rule-list" aria-label="Entity spawn rules">
+                    <div class="rule-row" data-rule-row="default">
+                      <select class="rule-field" aria-label="Rule target">
+                        <option value="any-room">Any room</option>
+                        <option value="main-path">Main path</option>
+                        <option value="branch">Branch</option>
+                      </select>
+                      <select class="rule-field" aria-label="Rule condition">
+                        <option value="chance">Chance</option>
+                        <option value="min-distance">Min distance</option>
+                        <option value="room-only">Room only</option>
+                      </select>
+                      <input class="rule-value" type="number" min="0" max="100" step="1" value="65" aria-label="Rule value" />
+                      <button class="generator-btn row-remove-btn" type="button" aria-label="Remove spawn rule">Remove</button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="pageVoxelizer" class="app-page workspace-page tool-page" data-engine-page="voxelizer" data-tool-page="voxelizer" aria-labelledby="voxelizerPageTitle" hidden>
+          <div id="voxelizerPanel" class="voxelizer-panel">
+            <section class="voxel-viewport-wrap" aria-label="Voxelization viewport">
+              <canvas id="voxelCanvas" class="voxel-canvas" tabindex="0"></canvas>
+              <div class="hint voxel-hint">
+                Use <span class="kbd">MMB</span> to orbit, <span class="kbd">Shift</span> + <span class="kbd">MMB</span> to pan, and mouse wheel to zoom.
+              </div>
+              <div id="voxelStatus" class="voxel-status">Voxel tool ready.</div>
+            </section>
+
+            <aside class="generation-panel voxel-controls-panel" aria-label="Voxelization controls">
+              <div class="panel-header">
+                <div>
+                  <h2 id="voxelizerPageTitle">Voxel Tool</h2>
+                  <p class="subtle">Box carving preview</p>
+                </div>
+                <span class="panel-badge">3D</span>
+              </div>
+
+              <div class="generator-form">
+                <section class="engine-section" aria-labelledby="voxelBoxTitle">
+                  <div class="section-heading">
+                    <h3 id="voxelBoxTitle">Bounding Box</h3>
+                    <span>Volume</span>
+                  </div>
+
+                  <div class="field-grid">
+                    <div class="field">
+                      <label for="voxelCenterX">Center X</label>
+                      <input id="voxelCenterX" type="number" min="-200" max="200" step="0.25" value="0" />
+                    </div>
+                    <div class="field">
+                      <label for="voxelCenterZ">Center Z</label>
+                      <input id="voxelCenterZ" type="number" min="-200" max="200" step="0.25" value="0" />
+                    </div>
+                    <div class="field">
+                      <label for="voxelWidth">Width</label>
+                      <input id="voxelWidth" type="number" min="2" max="240" step="0.25" value="18" />
+                    </div>
+                    <div class="field">
+                      <label for="voxelHeight">Height</label>
+                      <input id="voxelHeight" type="number" min="2" max="80" step="0.25" value="8" />
+                    </div>
+                    <div class="field">
+                      <label for="voxelDepth">Depth</label>
+                      <input id="voxelDepth" type="number" min="2" max="320" step="0.25" value="28" />
+                    </div>
+                    <div class="field">
+                      <label for="voxelSize">Voxel size</label>
+                      <input id="voxelSize" type="number" min="0.25" max="4" step="0.25" value="1" />
+                    </div>
+                  </div>
+                </section>
+
+                <section class="engine-section" aria-labelledby="voxelShapeTitle">
+                  <div class="section-heading">
+                    <h3 id="voxelShapeTitle">Carve Settings</h3>
+                    <span>Organic</span>
+                  </div>
+
+                  <div class="field">
+                    <label for="voxelSeed">Seed</label>
+                    <div class="voxel-seed-row">
+                      <input id="voxelSeed" type="number" min="1" max="2147483647" step="1" value="1337" />
+                      <button id="voxelRandomSeed" class="generator-btn" type="button">Random</button>
+                    </div>
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelErosion">Erosion</label>
+                      <output id="voxelErosionValue" for="voxelErosion">35%</output>
+                    </div>
+                    <input id="voxelErosion" type="range" min="0" max="100" step="1" value="35" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelFloorWidth">Floor width</label>
+                      <output id="voxelFloorWidthValue" for="voxelFloorWidth">42%</output>
+                    </div>
+                    <input id="voxelFloorWidth" type="range" min="10" max="90" step="1" value="42" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelSideRoughness">Side roughness</label>
+                      <output id="voxelSideRoughnessValue" for="voxelSideRoughness">55%</output>
+                    </div>
+                    <input id="voxelSideRoughness" type="range" min="0" max="100" step="1" value="55" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelCeilingVariation">Ceiling variation</label>
+                      <output id="voxelCeilingVariationValue" for="voxelCeilingVariation">45%</output>
+                    </div>
+                    <input id="voxelCeilingVariation" type="range" min="0" max="100" step="1" value="45" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelAsymmetry">Asymmetry</label>
+                      <output id="voxelAsymmetryValue" for="voxelAsymmetry">25%</output>
+                    </div>
+                    <input id="voxelAsymmetry" type="range" min="0" max="100" step="1" value="25" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelWallBulge">Wall bulge</label>
+                      <output id="voxelWallBulgeValue" for="voxelWallBulge">45%</output>
+                    </div>
+                    <input id="voxelWallBulge" type="range" min="0" max="100" step="1" value="45" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelPocketStrength">Pocket strength</label>
+                      <output id="voxelPocketStrengthValue" for="voxelPocketStrength">38%</output>
+                    </div>
+                    <input id="voxelPocketStrength" type="range" min="0" max="100" step="1" value="38" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelFloorClearance">Floor clearance</label>
+                      <output id="voxelFloorClearanceValue" for="voxelFloorClearance">2</output>
+                    </div>
+                    <input id="voxelFloorClearance" type="range" min="1" max="8" step="1" value="2" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelNoiseScale">Noise scale</label>
+                      <output id="voxelNoiseScaleValue" for="voxelNoiseScale">1.20</output>
+                    </div>
+                    <input id="voxelNoiseScale" type="range" min="0.15" max="8" step="0.05" value="1.2" />
+                  </div>
+
+                  <div class="field">
+                    <div class="field-row">
+                      <label for="voxelSmoothing">Smoothing passes</label>
+                      <output id="voxelSmoothingValue" for="voxelSmoothing">1</output>
+                    </div>
+                    <input id="voxelSmoothing" type="range" min="0" max="4" step="1" value="1" />
+                  </div>
+                </section>
+
+                <section class="engine-section" aria-labelledby="voxelOptionsTitle">
+                  <div class="section-heading">
+                    <h3 id="voxelOptionsTitle">Display and Caps</h3>
+                    <span>Preview</span>
+                  </div>
+
+                  <div class="voxel-toggle-grid">
+                    <label class="check-field" for="voxelCapFront">
+                      <input id="voxelCapFront" type="checkbox" />
+                      Cap front
+                    </label>
+                    <label class="check-field" for="voxelCapBottom">
+                      <input id="voxelCapBottom" type="checkbox" checked />
+                      Cap bottom
+                    </label>
+                    <label class="check-field" for="voxelShowBox">
+                      <input id="voxelShowBox" type="checkbox" checked />
+                      Show box
+                    </label>
+                    <label class="check-field" for="voxelWireOverlay">
+                      <input id="voxelWireOverlay" type="checkbox" checked />
+                      Wire overlay
+                    </label>
+                    <label class="check-field" for="voxelBackfaceCulling">
+                      <input id="voxelBackfaceCulling" type="checkbox" />
+                      Backface culling
+                    </label>
+                  </div>
+                </section>
+
+                <section class="engine-section" aria-labelledby="voxelColorsTitle">
+                  <div class="section-heading">
+                    <h3 id="voxelColorsTitle">Colors</h3>
+                    <span>Material</span>
+                  </div>
+
+                  <div class="field-grid voxel-color-grid">
+                    <div class="field">
+                      <label for="voxelFloorColor">Floor</label>
+                      <input id="voxelFloorColor" type="color" value="#6f6652" />
+                    </div>
+                    <div class="field">
+                      <label for="voxelWallColor">Walls</label>
+                      <input id="voxelWallColor" type="color" value="#4b4539" />
+                    </div>
+                    <div class="field">
+                      <label for="voxelCeilingColor">Ceiling</label>
+                      <input id="voxelCeilingColor" type="color" value="#2f2c25" />
+                    </div>
+                    <div class="field">
+                      <label for="voxelWireColor">Wire</label>
+                      <input id="voxelWireColor" type="color" value="#d7e7c2" />
+                    </div>
+                  </div>
+                </section>
+
+                <section class="engine-section actions-section" aria-labelledby="voxelActionsTitle">
+                  <div class="section-heading">
+                    <h3 id="voxelActionsTitle">Build Actions</h3>
+                    <span>Run</span>
+                  </div>
+
+                  <div class="button-grid">
+                    <button id="voxelizeBtn" class="generator-btn primary wide" type="button">Voxelize</button>
+                    <button id="voxelCreateBox" class="generator-btn" type="button">Create Box</button>
+                  </div>
+                </section>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </main>
     </div>
 
     <div id="playOverlay" class="play-overlay" aria-hidden="true">
@@ -225,6 +736,6 @@
     </div>
   </div>
 
-  <script type="module" src="./src/main.js"></script>
+  <script type="module" src="./src/main.js?v=engine-ui-4"></script>
 </body>
 </html>
