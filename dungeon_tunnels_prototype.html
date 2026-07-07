@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dungeon Tunnel Modular Map Prototype</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./src/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="toolbar">
+      <div class="brand">
+        <h1>Dungeon Tunnels</h1>
+        <p>modular 2D map prototype</p>
+      </div>
+
+      <div id="pieceStrip" class="piece-strip" aria-label="Dungeon pieces"></div>
+
+      <div class="divider"></div>
+
+      <div class="utility">
+        <button id="rotateLeft" class="utility-btn" title="Rotate left">Rotate L</button>
+        <button id="rotateRight" class="utility-btn" title="Rotate right">Rotate R</button>
+        <button id="centerView" class="utility-btn" title="Center view on origin">Center</button>
+        <button id="play3d" class="utility-btn" title="Play dungeon in 3D">Play 3D</button>
+        <button id="clearMap" class="utility-btn danger" title="Clear all placed pieces">Clear</button>
+      </div>
+
+      <div class="info">
+        <div id="currentStatus" class="status-pill">Current: Straight - 0 deg</div>
+        <div id="cellStatus">Cell: --</div>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <main class="viewport-wrap">
+      <canvas id="mapCanvas"></canvas>
+      <div class="hint">
+        Select a piece, then click the grid to place it. Hover shows a preview. Use <span class="kbd">Left</span>/<span class="kbd">Right</span> to rotate 90 deg. Right-click or <span class="kbd">Delete</span> erases. Hold <span class="kbd">Space</span> and drag to pan; mouse wheel zooms.
+      </div>
+      <div id="toast" class="toast"></div>
+      </main>
+
+      <aside class="generation-panel" aria-label="Dungeon generation controls">
+        <h2>Dungeon Generator</h2>
+        <p class="subtle">Rooms + tunnels</p>
+
+        <div class="generator-form">
+          <div class="field">
+            <label for="genSeed">Seed</label>
+            <input id="genSeed" type="text" value="dungeon-001" autocomplete="off" spellcheck="false" />
+          </div>
+
+          <label class="check-field" for="genAutoSeed">
+            <input id="genAutoSeed" type="checkbox" />
+            Auto seed on generate
+          </label>
+
+          <div class="field">
+            <label for="genTargetCells">Target cells</label>
+            <input id="genTargetCells" type="number" min="8" max="180" step="1" value="48" />
+          </div>
+
+          <div class="field">
+            <label for="genMainLength">Main path length</label>
+            <input id="genMainLength" type="number" min="3" max="120" step="1" value="20" />
+          </div>
+
+          <div class="field">
+            <label for="genBranchCount">Branches</label>
+            <input id="genBranchCount" type="number" min="0" max="40" step="1" value="8" />
+          </div>
+
+          <div class="field">
+            <label for="genBranchLength">Branch length</label>
+            <input id="genBranchLength" type="number" min="1" max="24" step="1" value="5" />
+          </div>
+
+          <div class="field">
+            <div class="field-row">
+              <label for="genLoopChance">Loop chance</label>
+              <output id="genLoopChanceValue" for="genLoopChance">14%</output>
+            </div>
+            <input id="genLoopChance" type="range" min="0" max="70" step="1" value="14" />
+          </div>
+
+          <div class="field">
+            <div class="field-row">
+              <label for="genRoomChance">Room chance</label>
+              <output id="genRoomChanceValue" for="genRoomChance">35%</output>
+            </div>
+            <input id="genRoomChance" type="range" min="0" max="100" step="1" value="35" />
+          </div>
+
+          <div class="button-grid">
+            <button id="generateDungeon" class="generator-btn primary wide" type="button">Generate</button>
+            <button id="randomSeed" class="generator-btn" type="button">Random Seed</button>
+            <button id="validateMap" class="generator-btn" type="button">Validate Map</button>
+          </div>
+        </div>
+
+        <div id="validationSummary" class="validation-box">No validation run yet.</div>
+      </aside>
+    </div>
+
+    <div id="playOverlay" class="play-overlay" aria-hidden="true">
+      <canvas id="playCanvas" class="play-canvas" tabindex="0"></canvas>
+      <div class="play-reticle" aria-hidden="true"></div>
+      <canvas id="minimapCanvas" class="play-minimap" width="184" height="184" aria-label="Dungeon minimap"></canvas>
+      <div class="play-hud">
+        <div id="playStatus" class="play-status">3D Dungeon</div>
+        <div class="play-actions">
+          <button id="lockPlay" class="play-ui-btn" type="button">Capture Mouse</button>
+          <button id="exitPlay" class="play-ui-btn" type="button">Exit</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
