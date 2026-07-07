@@ -1,6 +1,7 @@
 import {
   DIR,
   DIR_DATA,
+  OPPOSITE,
   countBits,
   hasDir,
   keyFor,
@@ -18,6 +19,12 @@ const CONNECTION_HALF_WIDTH = 3;
 const CAVE_MIN_HEIGHT = 6;
 const CAVE_MAX_HEIGHT = 11;
 const MINIMAP_REVEAL_RADIUS = 12;
+const SCATTER_DENSITY = {
+  oreDivisor: 340,
+  clutterDivisor: 220,
+  chestDivisor: 1250
+};
+const SCATTER_KIND_ORDER = ['ore', 'chest', 'rock', 'stalagmite', 'debris'];
 const PLAY_MOVE_CODES = new Set([
   'KeyW',
   'KeyA',
@@ -186,6 +193,490 @@ function createCaveLayout(maskMap) {
     heights.set(key, caveHeightAt(walkableVoxels, x, z));
   }
   return { walkableVoxels, heights };
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function hashString(value) {
+  let h = 2166136261;
+  const text = String(value || '');
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function randomSeeded(seed, x = 0, z = 0, salt = 0) {
+  let h = seed >>> 0;
+  h ^= Math.imul(Math.floor(x), 374761393);
+  h ^= Math.imul(Math.floor(z), 668265263);
+  h ^= Math.imul(Math.floor(salt), 2246822519);
+  h = Math.imul(h ^ (h >>> 15), 2246822507);
+  h = Math.imul(h ^ (h >>> 13), 3266489909);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function mapSignature(maskMap) {
+  return [...maskMap.values()]
+    .sort((a, b) => (a.x - b.x) || (a.y - b.y))
+    .map(node => `${node.x},${node.y}:${node.mask & 15}:${node.room ? 1 : 0}`)
+    .join('|');
+}
+
+function scatterSeedFor(maskMap, baseSeed) {
+  return hashString(`${baseSeed || 'manual'}|${mapSignature(maskMap)}`);
+}
+
+function directionInfo(dir) {
+  return DIR_DATA.find(info => info.dir === dir);
+}
+
+function wallPlacementFor(x, z, dir) {
+  switch (dir) {
+    case DIR.N:
+      return { x: x + 0.5, z: z + 0.055, rotationY: 0 };
+    case DIR.S:
+      return { x: x + 0.5, z: z + 0.945, rotationY: Math.PI };
+    case DIR.W:
+      return { x: x + 0.055, z: z + 0.5, rotationY: Math.PI / 2 };
+    case DIR.E:
+      return { x: x + 0.945, z: z + 0.5, rotationY: -Math.PI / 2 };
+    default:
+      return { x: x + 0.5, z: z + 0.5, rotationY: 0 };
+  }
+}
+
+function yawForDir(dir) {
+  switch (dir) {
+    case DIR.E: return -Math.PI / 2;
+    case DIR.S: return Math.PI;
+    case DIR.W: return Math.PI / 2;
+    default: return 0;
+  }
+}
+
+function neighborSummary(walkableVoxels, x, z) {
+  const missingDirs = [];
+  let cardinalOpen = 0;
+  let allOpen = 0;
+
+  for (const info of DIR_DATA) {
+    if (walkableVoxels.has(voxelKey(x + info.dx, z + info.dy))) {
+      cardinalOpen++;
+    } else {
+      missingDirs.push(info.dir);
+    }
+  }
+
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -1; dz <= 1; dz++) {
+      if (!dx && !dz) continue;
+      if (walkableVoxels.has(voxelKey(x + dx, z + dz))) allOpen++;
+    }
+  }
+
+  return {
+    missingDirs,
+    cardinalOpen,
+    allOpen,
+    nearWall: missingDirs.length > 0
+  };
+}
+
+function distanceToNodeCenter(x, z, node) {
+  return Math.hypot((x + 0.5) - node.x * VOXELS_PER_TILE, (z + 0.5) - node.y * VOXELS_PER_TILE);
+}
+
+function nearestNode(maskMap, x, z) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const node of maskMap.values()) {
+    const distance = distanceToNodeCenter(x, z, node);
+    if (distance < bestDistance) {
+      best = node;
+      bestDistance = distance;
+    }
+  }
+  return { node: best, distance: bestDistance };
+}
+
+function isOnOpenGraphPath(worldX, worldZ, maskMap, padding = 0.42) {
+  for (const node of maskMap.values()) {
+    const cx = node.x * VOXELS_PER_TILE;
+    const cz = node.y * VOXELS_PER_TILE;
+    if (Math.abs(worldX - cx) <= 1.55 + padding && Math.abs(worldZ - cz) <= 1.55 + padding) return true;
+
+    for (const info of DIR_DATA) {
+      if (!hasDir(node.mask, info.dir)) continue;
+      if (info.dir === DIR.N || info.dir === DIR.S) {
+        const minZ = info.dir === DIR.N ? cz - VOXELS_PER_TILE : cz;
+        const maxZ = info.dir === DIR.N ? cz : cz + VOXELS_PER_TILE;
+        if (
+          Math.abs(worldX - cx) <= CONNECTION_HALF_WIDTH + padding &&
+          worldZ >= minZ - padding &&
+          worldZ <= maxZ + padding
+        ) {
+          return true;
+        }
+      } else {
+        const minX = info.dir === DIR.W ? cx - VOXELS_PER_TILE : cx;
+        const maxX = info.dir === DIR.W ? cx : cx + VOXELS_PER_TILE;
+        if (
+          Math.abs(worldZ - cz) <= CONNECTION_HALF_WIDTH + padding &&
+          worldX >= minX - padding &&
+          worldX <= maxX + padding
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function solidVoxelKeysFor(item) {
+  const keys = [];
+  const radius = item.blockRadius || item.radius || 0.42;
+  const minX = Math.floor(item.position.x - radius);
+  const maxX = Math.floor(item.position.x + radius);
+  const minZ = Math.floor(item.position.z - radius);
+  const maxZ = Math.floor(item.position.z + radius);
+
+  for (let x = minX; x <= maxX; x++) {
+    for (let z = minZ; z <= maxZ; z++) {
+      const dx = (x + 0.5) - item.position.x;
+      const dz = (z + 0.5) - item.position.z;
+      if (dx * dx + dz * dz <= (radius + 0.12) * (radius + 0.12)) keys.push(voxelKey(x, z));
+    }
+  }
+  return keys.length ? keys : [voxelKey(Math.floor(item.position.x), Math.floor(item.position.z))];
+}
+
+function buildCriticalTraversalKeys(maskMap, walkableVoxels) {
+  const keys = [];
+  for (const node of maskMap.values()) {
+    const key = voxelKey(node.x * VOXELS_PER_TILE, node.y * VOXELS_PER_TILE);
+    if (walkableVoxels.has(key)) keys.push(key);
+  }
+  return keys;
+}
+
+function keepsTraversalOpen(walkableVoxels, blockedVoxels, criticalKeys) {
+  const startKey = criticalKeys.find(key => walkableVoxels.has(key) && !blockedVoxels.has(key));
+  if (!startKey) return false;
+
+  const seen = new Set([startKey]);
+  const queue = [startKey];
+  let index = 0;
+  while (index < queue.length) {
+    const key = queue[index++];
+    const [x, z] = key.split(',').map(Number);
+    for (const info of DIR_DATA) {
+      const nextKey = voxelKey(x + info.dx, z + info.dy);
+      if (!walkableVoxels.has(nextKey) || blockedVoxels.has(nextKey) || seen.has(nextKey)) continue;
+      seen.add(nextKey);
+      queue.push(nextKey);
+    }
+  }
+
+  return criticalKeys.every(key => !walkableVoxels.has(key) || seen.has(key));
+}
+
+function isFarFromItems(candidate, items, minDistance, filter = null) {
+  for (const item of items) {
+    if (filter && !filter(item)) continue;
+    const distance = Math.hypot(candidate.position.x - item.position.x, candidate.position.z - item.position.z);
+    if (distance < minDistance) return false;
+  }
+  return true;
+}
+
+function sortScatterCandidates(candidates, seed, salt) {
+  return candidates
+    .map(candidate => ({
+      ...candidate,
+      score: candidate.score + randomSeeded(seed, candidate.position.x * 17, candidate.position.z * 19, salt) * 0.65
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+function oreSubtype(seed, x, z, dir) {
+  const roll = randomSeeded(seed, x, z, 300 + dir);
+  if (roll > 0.88) return 'crystal';
+  if (roll > 0.54) return 'copper';
+  return 'iron';
+}
+
+function buildOreCandidates(caveLayout, maskMap, seed, start) {
+  const candidates = [];
+  for (const key of caveLayout.walkableVoxels) {
+    const [x, z] = key.split(',').map(Number);
+    const summary = neighborSummary(caveLayout.walkableVoxels, x, z);
+    if (!summary.missingDirs.length) continue;
+    const distanceFromStart = Math.hypot((x + 0.5) - start.x, (z + 0.5) - start.z);
+    const nodeContext = nearestNode(maskMap, x, z);
+
+    for (const dir of summary.missingDirs) {
+      const wall = wallPlacementFor(x, z, dir);
+      const height = caveLayout.heights.get(key) || CAVE_MIN_HEIGHT;
+      const y = clamp(1.05 + randomSeeded(seed, x, z, 310 + dir) * Math.min(2.8, height - 2), 0.9, height - 1.25);
+      const subtype = oreSubtype(seed, x, z, dir);
+      const rarityBoost = subtype === 'crystal' ? 0.34 : (subtype === 'copper' ? 0.16 : 0);
+      const corridorPenalty = isOnOpenGraphPath(wall.x, wall.z, maskMap, 0.2) ? 0.38 : 0;
+
+      candidates.push({
+        type: 'ore',
+        subtype,
+        sourceKey: `${key}:${dir}`,
+        position: { x: wall.x, y, z: wall.z },
+        rotationY: wall.rotationY,
+        radius: 0.22,
+        blockRadius: 0,
+        solid: false,
+        scale: {
+          x: 0.82 + randomSeeded(seed, x, z, 320 + dir) * 0.55,
+          y: 0.72 + randomSeeded(seed, x, z, 330 + dir) * 0.65,
+          z: 0.75 + randomSeeded(seed, x, z, 340 + dir) * 0.4
+        },
+        tags: ['wall', 'mineral'],
+        score: 0.45 + summary.missingDirs.length * 0.16 + rarityBoost + Math.min(distanceFromStart / 90, 0.24) - corridorPenalty - nodeContext.distance * 0.006
+      });
+    }
+  }
+  return candidates;
+}
+
+function itemFromFloorCandidate(type, subtype, sourceKey, x, z, seed, score, tags = []) {
+  const jitterX = (randomSeeded(seed, x, z, 710) - 0.5) * 0.34;
+  const jitterZ = (randomSeeded(seed, x, z, 711) - 0.5) * 0.34;
+  const rotationY = randomSeeded(seed, x, z, 712) * Math.PI * 2;
+  const base = {
+    type,
+    subtype,
+    sourceKey,
+    position: { x: x + 0.5 + jitterX, y: 0, z: z + 0.5 + jitterZ },
+    rotationY,
+    score,
+    tags,
+    solid: false,
+    radius: 0.22,
+    blockRadius: 0
+  };
+
+  if (type === 'rock') {
+    const size = 0.72 + randomSeeded(seed, x, z, 720) * 0.45;
+    return {
+      ...base,
+      solid: true,
+      radius: 0.42,
+      blockRadius: 0.42,
+      position: { ...base.position, y: 0.22 + size * 0.12 },
+      scale: { x: size, y: 0.46 + randomSeeded(seed, x, z, 721) * 0.24, z: 0.62 + randomSeeded(seed, x, z, 722) * 0.38 }
+    };
+  }
+
+  if (type === 'stalagmite') {
+    const height = 0.95 + randomSeeded(seed, x, z, 730) * 0.85;
+    return {
+      ...base,
+      solid: true,
+      radius: 0.36,
+      blockRadius: 0.36,
+      position: { ...base.position, y: height / 2 },
+      scale: { x: 0.72 + randomSeeded(seed, x, z, 731) * 0.35, y: height, z: 0.72 + randomSeeded(seed, x, z, 732) * 0.35 }
+    };
+  }
+
+  return {
+    ...base,
+    position: { ...base.position, y: 0.07 },
+    scale: { x: 0.5 + randomSeeded(seed, x, z, 740) * 0.35, y: 0.16, z: 0.36 + randomSeeded(seed, x, z, 741) * 0.28 }
+  };
+}
+
+function buildClutterCandidates(caveLayout, maskMap, seed, start) {
+  const candidates = [];
+  for (const key of caveLayout.walkableVoxels) {
+    const [x, z] = key.split(',').map(Number);
+    const summary = neighborSummary(caveLayout.walkableVoxels, x, z);
+    if (!summary.nearWall || summary.cardinalOpen < 2) continue;
+
+    const wx = x + 0.5;
+    const wz = z + 0.5;
+    if (isOnOpenGraphPath(wx, wz, maskMap, 0.1)) continue;
+
+    const distanceFromStart = Math.hypot(wx - start.x, wz - start.z);
+    if (distanceFromStart < 9) continue;
+
+    const roll = randomSeeded(seed, x, z, 760);
+    const type = roll > 0.72 ? 'stalagmite' : (roll > 0.38 ? 'rock' : 'debris');
+    const score = 0.42 + summary.missingDirs.length * 0.2 + summary.allOpen * 0.035 + Math.min(distanceFromStart / 120, 0.2);
+    candidates.push(itemFromFloorCandidate(type, type, key, x, z, seed, score, ['floor', 'clutter']));
+  }
+  return candidates;
+}
+
+function nearestWalkableAround(caveLayout, maskMap, targetX, targetZ, maxRadius = 3) {
+  const candidates = [];
+  for (let radius = 0; radius <= maxRadius; radius++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
+        const x = Math.floor(targetX + dx);
+        const z = Math.floor(targetZ + dz);
+        const key = voxelKey(x, z);
+        if (!caveLayout.walkableVoxels.has(key)) continue;
+        const summary = neighborSummary(caveLayout.walkableVoxels, x, z);
+        if (summary.cardinalOpen < 2) continue;
+        if (isOnOpenGraphPath(x + 0.5, z + 0.5, maskMap, 0.05)) continue;
+        candidates.push({ x, z, distance: Math.hypot((x + 0.5) - targetX, (z + 0.5) - targetZ), summary });
+      }
+    }
+    if (candidates.length) break;
+  }
+  return candidates.sort((a, b) => a.distance - b.distance)[0] || null;
+}
+
+function chestCandidateForNode(caveLayout, maskMap, node, seed, start) {
+  const openDirs = DIR_DATA.filter(info => hasDir(node.mask, info.dir));
+  if (openDirs.length !== 1) return null;
+
+  const openDir = openDirs[0].dir;
+  const backInfo = directionInfo(OPPOSITE[openDir]);
+  const cx = node.x * VOXELS_PER_TILE;
+  const cz = node.y * VOXELS_PER_TILE;
+  const targetX = cx + backInfo.dx * 4.25;
+  const targetZ = cz + backInfo.dy * 4.25;
+  const floor = nearestWalkableAround(caveLayout, maskMap, targetX, targetZ, 3);
+  if (!floor) return null;
+
+  const distanceFromStart = Math.hypot((floor.x + 0.5) - start.x, (floor.z + 0.5) - start.z);
+  if (distanceFromStart < 15) return null;
+
+  return {
+    type: 'chest',
+    subtype: 'wood',
+    sourceKey: `${node.x},${node.y}:deadend`,
+    position: { x: floor.x + 0.5, y: 0.34, z: floor.z + 0.5 },
+    rotationY: yawForDir(openDir),
+    radius: 0.52,
+    blockRadius: 0.46,
+    solid: true,
+    scale: { x: 1, y: 1, z: 1 },
+    tags: ['reward', 'deadend'],
+    score: 1.2 + Math.min(distanceFromStart / 80, 0.45) + randomSeeded(seed, node.x, node.y, 810) * 0.25
+  };
+}
+
+function buildChestCandidates(caveLayout, maskMap, seed, start) {
+  const candidates = [];
+  for (const node of maskMap.values()) {
+    const deadEnd = chestCandidateForNode(caveLayout, maskMap, node, seed, start);
+    if (deadEnd) candidates.push(deadEnd);
+  }
+
+  for (const key of caveLayout.walkableVoxels) {
+    const [x, z] = key.split(',').map(Number);
+    const summary = neighborSummary(caveLayout.walkableVoxels, x, z);
+    if (!summary.nearWall || summary.cardinalOpen < 3 || summary.allOpen < 5) continue;
+    if (isOnOpenGraphPath(x + 0.5, z + 0.5, maskMap, 0.15)) continue;
+
+    const context = nearestNode(maskMap, x, z);
+    if (!context.node || countBits(context.node.mask) < 3) continue;
+    const distanceFromStart = Math.hypot((x + 0.5) - start.x, (z + 0.5) - start.z);
+    if (distanceFromStart < 18) continue;
+
+    candidates.push({
+      type: 'chest',
+      subtype: 'wood',
+      sourceKey: `${key}:pocket`,
+      position: { x: x + 0.5, y: 0.34, z: z + 0.5 },
+      rotationY: randomSeeded(seed, x, z, 830) * Math.PI * 2,
+      radius: 0.52,
+      blockRadius: 0.46,
+      solid: true,
+      scale: { x: 1, y: 1, z: 1 },
+      tags: ['reward', 'pocket'],
+      score: 0.62 + summary.missingDirs.length * 0.13 + Math.min(distanceFromStart / 95, 0.36)
+    });
+  }
+
+  return candidates;
+}
+
+function canReserveSolidItem(item, caveLayout, maskMap, blockedVoxels, criticalKeys) {
+  const itemKeys = solidVoxelKeysFor(item);
+  for (const key of itemKeys) {
+    if (!caveLayout.walkableVoxels.has(key) || blockedVoxels.has(key)) return false;
+    const [x, z] = key.split(',').map(Number);
+    if (isOnOpenGraphPath(x + 0.5, z + 0.5, maskMap, 0.1)) return false;
+  }
+
+  const nextBlocked = new Set(blockedVoxels);
+  for (const key of itemKeys) nextBlocked.add(key);
+  if (!keepsTraversalOpen(caveLayout.walkableVoxels, nextBlocked, criticalKeys)) return false;
+  return itemKeys;
+}
+
+function pushScatterItem(items, item) {
+  item.id = `${item.type}-${items.length + 1}-${hashString(item.sourceKey).toString(36)}`;
+  items.push(item);
+}
+
+function addSolidScatterItem(items, item, caveLayout, maskMap, blockedVoxels, criticalKeys) {
+  const itemKeys = canReserveSolidItem(item, caveLayout, maskMap, blockedVoxels, criticalKeys);
+  if (!itemKeys) return false;
+  for (const key of itemKeys) blockedVoxels.add(key);
+  item.solidVoxelKeys = itemKeys;
+  pushScatterItem(items, item);
+  return true;
+}
+
+function generateScatterItems(maskMap, caveLayout, baseSeed) {
+  const seed = scatterSeedFor(maskMap, baseSeed);
+  const floorCount = caveLayout.walkableVoxels.size;
+  const startNode = maskMap.get(keyFor(0, 0)) || maskMap.values().next().value;
+  const start = { x: startNode.x * VOXELS_PER_TILE, z: startNode.y * VOXELS_PER_TILE };
+  const items = [];
+  const blockedVoxels = new Set();
+  const criticalKeys = buildCriticalTraversalKeys(maskMap, caveLayout.walkableVoxels);
+
+  const targets = {
+    ore: clamp(Math.round(floorCount / SCATTER_DENSITY.oreDivisor), 2, 12),
+    chest: clamp(Math.round(floorCount / SCATTER_DENSITY.chestDivisor), floorCount > 900 ? 1 : 0, 4),
+    clutter: clamp(Math.round(floorCount / SCATTER_DENSITY.clutterDivisor), 4, 22)
+  };
+
+  const oreCandidates = sortScatterCandidates(buildOreCandidates(caveLayout, maskMap, seed, start), seed, 910);
+  for (const candidate of oreCandidates) {
+    if (items.filter(item => item.type === 'ore').length >= targets.ore) break;
+    if (!isFarFromItems(candidate, items, 4.2, item => item.type === 'ore')) continue;
+    pushScatterItem(items, candidate);
+  }
+
+  const chestCandidates = sortScatterCandidates(buildChestCandidates(caveLayout, maskMap, seed, start), seed, 920);
+  for (const candidate of chestCandidates) {
+    if (items.filter(item => item.type === 'chest').length >= targets.chest) break;
+    if (!isFarFromItems(candidate, items, 13.5, item => item.type === 'chest')) continue;
+    addSolidScatterItem(items, candidate, caveLayout, maskMap, blockedVoxels, criticalKeys);
+  }
+
+  const clutterCandidates = sortScatterCandidates(buildClutterCandidates(caveLayout, maskMap, seed, start), seed, 930);
+  for (const candidate of clutterCandidates) {
+    if (items.filter(item => ['rock', 'stalagmite', 'debris'].includes(item.type)).length >= targets.clutter) break;
+    if (!isFarFromItems(candidate, items, 2.8, item => item.type !== 'ore')) continue;
+    if (candidate.solid) {
+      addSolidScatterItem(items, candidate, caveLayout, maskMap, blockedVoxels, criticalKeys);
+    } else {
+      pushScatterItem(items, candidate);
+    }
+  }
+
+  items.sort((a, b) => SCATTER_KIND_ORDER.indexOf(a.type) - SCATTER_KIND_ORDER.indexOf(b.type) || a.id.localeCompare(b.id));
+  return { items, blockedVoxels, seed };
 }
 
 function colorForFace(type, x, y, z, normal) {
@@ -442,6 +933,119 @@ function revealMinimapArea(runtime) {
   }
 }
 
+function scatterMaterial(THREE, color, emissive = 0x000000, emissiveIntensity = 0) {
+  return new THREE.MeshLambertMaterial({
+    color,
+    emissive,
+    emissiveIntensity,
+    fog: true
+  });
+}
+
+function applyInstanceTransform(THREE, dummy, item) {
+  const scale = item.scale || { x: 1, y: 1, z: 1 };
+  dummy.position.set(item.position.x, item.position.y, item.position.z);
+  dummy.rotation.set(0, item.rotationY || 0, 0);
+  dummy.scale.set(scale.x || 1, scale.y || 1, scale.z || 1);
+  dummy.updateMatrix();
+}
+
+function addInstancedScatterMesh(THREE, group, items, geometry, material) {
+  if (!items.length) {
+    geometry.dispose();
+    material.dispose();
+    return;
+  }
+
+  const mesh = new THREE.InstancedMesh(geometry, material, items.length);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < items.length; i++) {
+    applyInstanceTransform(THREE, dummy, items[i]);
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  mesh.frustumCulled = false;
+  group.add(mesh);
+}
+
+function groupedItems(items, type, subtype = null) {
+  return items.filter(item => item.type === type && (subtype === null || item.subtype === subtype));
+}
+
+function createChestMesh(THREE, item) {
+  const group = new THREE.Group();
+  group.position.set(item.position.x, 0, item.position.z);
+  group.rotation.y = item.rotationY || 0;
+
+  const wood = scatterMaterial(THREE, 0x5b371c);
+  const lid = scatterMaterial(THREE, 0x704521);
+  const metal = scatterMaterial(THREE, 0x8b806d, 0x120d07, 0.06);
+
+  const base = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.44, 0.76), wood);
+  base.position.y = 0.26;
+  const top = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.24, 0.7), lid);
+  top.position.y = 0.6;
+
+  const strapGeometry = new THREE.BoxGeometry(0.12, 0.76, 0.84);
+  const leftStrap = new THREE.Mesh(strapGeometry, metal);
+  leftStrap.position.set(-0.28, 0.44, 0);
+  const rightStrap = new THREE.Mesh(strapGeometry.clone(), metal);
+  rightStrap.position.set(0.28, 0.44, 0);
+
+  const latch = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.18, 0.08), metal);
+  latch.position.set(0, 0.45, -0.42);
+
+  for (const mesh of [base, top, leftStrap, rightStrap, latch]) {
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    group.add(mesh);
+  }
+
+  return group;
+}
+
+function createScatterGroup(THREE, scatter) {
+  const group = new THREE.Group();
+  group.name = 'cave-scatter';
+  const items = scatter.items || [];
+
+  const oreGeometry = new THREE.BoxGeometry(0.58, 0.34, 0.12);
+  addInstancedScatterMesh(THREE, group, groupedItems(items, 'ore', 'iron'), oreGeometry.clone(), scatterMaterial(THREE, 0x8d9990, 0x141816, 0.08));
+  addInstancedScatterMesh(THREE, group, groupedItems(items, 'ore', 'copper'), oreGeometry.clone(), scatterMaterial(THREE, 0xb87534, 0x2c1205, 0.14));
+  addInstancedScatterMesh(THREE, group, groupedItems(items, 'ore', 'crystal'), oreGeometry.clone(), scatterMaterial(THREE, 0x4bb8c4, 0x0f3a45, 0.28));
+  oreGeometry.dispose();
+
+  addInstancedScatterMesh(
+    THREE,
+    group,
+    groupedItems(items, 'rock'),
+    new THREE.BoxGeometry(0.82, 0.55, 0.76),
+    scatterMaterial(THREE, 0x37352d)
+  );
+  addInstancedScatterMesh(
+    THREE,
+    group,
+    groupedItems(items, 'stalagmite'),
+    new THREE.ConeGeometry(0.42, 1, 5),
+    scatterMaterial(THREE, 0x4b4537)
+  );
+  addInstancedScatterMesh(
+    THREE,
+    group,
+    groupedItems(items, 'debris'),
+    new THREE.BoxGeometry(0.42, 0.16, 0.34),
+    scatterMaterial(THREE, 0x2f2c24)
+  );
+
+  for (const chest of groupedItems(items, 'chest')) {
+    group.add(createChestMesh(THREE, chest));
+  }
+
+  return group;
+}
+
 export function createPlay3d(elements, callbacks) {
   const {
     playOverlay,
@@ -453,6 +1057,7 @@ export function createPlay3d(elements, callbacks) {
   const {
     getMaskMap,
     getPlacedSize,
+    getScatterSeed,
     setValidationResult,
     showToast
   } = callbacks;
@@ -501,6 +1106,9 @@ export function createPlay3d(elements, callbacks) {
       torchLight: null,
       playerMarker: null,
       minimapData: null,
+      scatterItems: [],
+      scatterGroup: null,
+      solidScatterVoxels: new Set(),
       discoveredVoxels: new Set()
     };
     return playRuntime;
@@ -524,6 +1132,9 @@ export function createPlay3d(elements, callbacks) {
     disposeScene(runtime.minimapScene);
     runtime.playerMarker = null;
     runtime.minimapData = null;
+    runtime.scatterItems = [];
+    runtime.scatterGroup = null;
+    runtime.solidScatterVoxels.clear();
     runtime.discoveredVoxels.clear();
   }
 
@@ -539,15 +1150,6 @@ export function createPlay3d(elements, callbacks) {
     const minimapWidth = minimapCanvas.clientWidth || 184;
     const minimapHeight = minimapCanvas.clientHeight || 184;
     playRuntime.minimapRenderer.setSize(minimapWidth, minimapHeight, false);
-  }
-
-  function yawForDir(dir) {
-    switch (dir) {
-      case DIR.E: return -Math.PI / 2;
-      case DIR.S: return Math.PI;
-      case DIR.W: return Math.PI / 2;
-      default: return 0;
-    }
   }
 
   function firstOpenDir(mask) {
@@ -566,8 +1168,13 @@ export function createPlay3d(elements, callbacks) {
 
     const caveLayout = createCaveLayout(maskMap);
     const terrain = buildVoxelCaveMesh(THREE, caveLayout);
+    const scatter = generateScatterItems(maskMap, caveLayout, getScatterSeed ? getScatterSeed() : 'manual');
     runtime.walkableVoxels = caveLayout.walkableVoxels;
+    runtime.scatterItems = scatter.items;
+    runtime.solidScatterVoxels = scatter.blockedVoxels;
     runtime.scene.add(terrain.mesh);
+    runtime.scatterGroup = createScatterGroup(THREE, scatter);
+    runtime.scene.add(runtime.scatterGroup);
 
     runtime.minimapScene.background = new THREE.Color(0x000000);
     runtime.minimapData = buildMinimapMesh(THREE, caveLayout);
@@ -593,13 +1200,14 @@ export function createPlay3d(elements, callbacks) {
     runtime.camera.rotation.order = 'YXZ';
     updatePlayCamera(runtime);
     revealMinimapArea(runtime);
-    playSceneLabel = `Voxel Cave - ${validation.cells} cells, ${terrain.faceCount} faces`;
+    playSceneLabel = `Voxel Cave - ${validation.cells} cells, ${terrain.faceCount} faces, ${scatter.items.length} props`;
     playStatus.textContent = playSceneLabel;
   }
 
   function canStandOnVoxel(runtime, x, z) {
     if (!runtime.walkableVoxels) return true;
-    return runtime.walkableVoxels.has(voxelKey(Math.floor(x), Math.floor(z)));
+    const key = voxelKey(Math.floor(x), Math.floor(z));
+    return runtime.walkableVoxels.has(key) && !runtime.solidScatterVoxels.has(key);
   }
 
   function canStandAt(runtime, fromX, fromZ, toX, toZ) {

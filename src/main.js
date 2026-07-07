@@ -68,6 +68,7 @@ let spaceDown = false;
 let lastPointer = { x: 0, y: 0 };
 let camera = { x: 0, y: 0 };
 const placed = new Map();
+let activeScatterSeed = 'manual';
 
 function placedToMaskMap() {
   return mapPlacedToMaskMap(placed);
@@ -208,6 +209,12 @@ function rotate(delta) {
 
 function placeAt(cell) {
   if (!cell) return;
+  const piece = pieceById[currentPiece];
+  placed.set(keyFor(cell.x, cell.y), {
+    type: currentPiece,
+    rot: piece.room ? 0 : mod(rotation, 4)
+  });
+  activeScatterSeed = 'manual';
   saveMap();
   draw();
 }
@@ -215,6 +222,7 @@ function placeAt(cell) {
 function eraseAt(cell) {
   if (!cell) return;
   placed.delete(keyFor(cell.x, cell.y));
+  activeScatterSeed = 'manual';
   saveMap();
   draw();
 }
@@ -306,6 +314,7 @@ function generateDungeonFromSettings() {
       placed.set(key, value);
     }
 
+    activeScatterSeed = `${settings.seed}:${attempt}`;
     saveMap();
     camera.x = Math.round(width / 2);
     camera.y = Math.round(height / 2);
@@ -337,6 +346,7 @@ const play3d = createPlay3d(
   {
     getMaskMap: placedToMaskMap,
     getPlacedSize: () => placed.size,
+    getScatterSeed: () => activeScatterSeed,
     setValidationResult,
     showToast
   }
@@ -510,6 +520,7 @@ clearMapBtn.addEventListener('click', () => {
     return;
   }
   placed.clear();
+  activeScatterSeed = 'manual';
   saveMap();
   showToast('Map cleared');
   draw();
