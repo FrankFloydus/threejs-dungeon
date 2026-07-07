@@ -1,0 +1,36 @@
+{
+  "name": "dungeon-gen-native",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "sdl3",
+      "features": [
+        "vulkan"
+      ]
+    },
+    {
+      "name": "sdl3-image",
+      "features": [
+        "png",
+        "jpeg",
+        "webp"
+      ]
+    },
+    {
+      "name": "imgui",
+      "features": [
+        "docking-experimental",
+        "sdl3-binding"
+      ]
+    },
+    {
+      "name": "bgfx",
+      "features": [
+        "multithreaded",
+        "tools"
+      ]
+    },
+    "meshoptimizer",
+    "glm"
+  ]
+}
